@@ -7,19 +7,30 @@ const db = new sqlite3.Database(dbPath, (err) => {
     if (err) {
         console.error('Error opening database', err.message);
     } else {
-        console.log('✅ Connected to SQLite database (Local Mode).');
+        console.log('✅ Connected to SQLite database (Auth Mode).');
         
         db.serialize(() => {
-            // 1. Projects Table
+            // 1. Users Table
+            db.run(`CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT DEFAULT 'student',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )`);
+
+            // 2. Projects Table (Now linked to user_id)
             db.run(`CREATE TABLE IF NOT EXISTS projects (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
                 name TEXT NOT NULL,
                 description TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )`);
 
-            // 2. Canvas Flows Table
+            // 3. Canvas Flows Table
             db.run(`CREATE TABLE IF NOT EXISTS canvas_flows (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 project_id INTEGER,
@@ -29,7 +40,7 @@ const db = new sqlite3.Database(dbPath, (err) => {
                 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
             )`);
 
-            // 3. Datasets Table
+            // 4. Datasets Table
             db.run(`CREATE TABLE IF NOT EXISTS datasets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 project_id INTEGER,
@@ -41,7 +52,7 @@ const db = new sqlite3.Database(dbPath, (err) => {
                 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
             )`);
 
-            // 4. Training Sessions Table
+            // 5. Training Sessions Table
             db.run(`CREATE TABLE IF NOT EXISTS training_sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 project_id INTEGER,
@@ -55,21 +66,44 @@ const db = new sqlite3.Database(dbPath, (err) => {
                 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
             )`);
 
-            // 5. Models Table
+            // 6. Trained Models Table (NEW)
             db.run(`CREATE TABLE IF NOT EXISTS models (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id INTEGER,
+                training_session_id INTEGER,
+                project_id INTEGER,
                 name TEXT NOT NULL,
-                format TEXT,
                 file_path TEXT NOT NULL,
-                accuracy REAL,
+                accuracy_map REAL,
+                epoch_reached INTEGER,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (session_id) REFERENCES training_sessions(id) ON DELETE CASCADE
+                FOREIGN KEY (training_session_id) REFERENCES training_sessions(id) ON DELETE SET NULL,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
             )`);
 
-            console.log('🚀 SQLite schema initialized successfully.');
+            // 7. User Settings Table (NEW)
+            db.run(`CREATE TABLE IF NOT EXISTS user_settings (
+                user_id INTEGER PRIMARY KEY,
+                theme TEXT DEFAULT 'light',
+                language TEXT DEFAULT 'th',
+                auto_save BOOLEAN DEFAULT 1,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )`);
+
+            // 8. Inference Logs Table (NEW)
+            db.run(`CREATE TABLE IF NOT EXISTS inference_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER,
+                model_id INTEGER,
+                input_source TEXT,
+                detections_count INTEGER,
+                latency_ms REAL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY (model_id) REFERENCES models(id) ON DELETE SET NULL
+            )`, () => {
+                console.log('🚀 Optimized AI Database schema initialized successfully.');
+                db.close();
+            });
         });
     }
 });
-
-db.close();

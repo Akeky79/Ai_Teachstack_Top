@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Handle, Position, useReactFlow } from '@xyflow/react';
 
 function getBadgeClass(color: string) {
@@ -16,115 +17,290 @@ export default function CustomNode({ id, data, selected }: any) {
     const { def } = data;
     if (!def) return null;
 
+    const [cameraStatus, setCameraStatus] = useState<Record<number, string>>({});
+
     const onDelete = () => {
         setNodes((nodes) => nodes.filter((node) => node.id !== id));
         setEdges((edges) => edges.filter((edge) => edge.source !== id && edge.target !== id));
+    };
+
+    const handleParamChange = (idx: number, newValue: any, key: string = 'value') => {
+        setNodes((nds) => 
+            nds.map((node) => {
+                if (node.id === id) {
+                    const newDef = { ...node.data.def };
+                    const newParams = [...newDef.params];
+                    newParams[idx] = { ...newParams[idx], [key]: newValue };
+                    newDef.params = newParams;
+                    return { ...node, data: { ...node.data, def: newDef } };
+                }
+                return node;
+            })
+        );
+    };
+
+    const testCamera = async (paramIdx: number) => {
+        setCameraStatus(s => ({ ...s, [paramIdx]: 'testing' }));
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            stream.getTracks().forEach(t => t.stop()); // ปิดกล้องทันทีหลังทดสอบ
+            setCameraStatus(s => ({ ...s, [paramIdx]: 'ok' }));
+        } catch (err: any) {
+            setCameraStatus(s => ({ ...s, [paramIdx]: 'error' }));
+        }
     };
 
     const hasTargetHandle = def.color !== 'blue'; // ทุกอันรับ Input ได้ยกเว้นสีบล็อก Input (Blue)
     const hasSourceHandle = def.color !== 'green' && def.color !== 'rose'; // ทุกอันส่ง Output ได้ ยกเว้นบล็อก Output (Green/Rose)
 
     return (
-        <div className={`workspace-node bg-white dark:bg-slate-800 rounded-2xl shadow-[0_4px_20px_rgba(0,0,0,0.08)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.4)] border-2 min-w-[200px] hover:shadow-[0_8px_30px_rgba(0,0,0,0.12)] transition-shadow ${selected ? 'border-indigo-500 ring-4 ring-indigo-500/20' : 'border-slate-200 dark:border-slate-700'}`}>
+        <div className={`workspace-node bg-white dark:bg-slate-900/95 backdrop-blur-xl rounded-2xl shadow-sm hover:shadow-md dark:shadow-none border border-slate-200/80 dark:border-slate-700/80 min-w-[260px] transition-all duration-200 ${selected ? 'ring-2 ring-indigo-500 shadow-xl dark:ring-indigo-400' : ''}`}>
             
             {/* Input Handle (รับเส้นที่ถูกโยงมาหา) */}
             {hasTargetHandle && (
                 <Handle 
                     type="target" 
                     position={Position.Left} 
-                    className="w-3.5 h-3.5 bg-white dark:bg-slate-800 border-2 border-slate-400 dark:border-slate-500 rounded-full hover:bg-indigo-400 hover:border-indigo-400 -left-2 transition-colors" 
+                    className="w-4 h-4 bg-white dark:bg-slate-800 border-2 border-slate-300 dark:border-slate-600 rounded-full hover:bg-indigo-500 hover:border-indigo-500 hover:scale-125 -left-2 transition-all" 
                 />
             )}
 
-            <div className={`wb-header py-2.5 px-3.5 border-b border-slate-100 dark:border-slate-700/50 flex items-center justify-between rounded-t-[14px] ${def.color}-header transition-colors`}>
-                <div className="flex items-center gap-2">
-                    <span className="text-lg">{def.icon}</span>
-                    <div>
-                        <p className="text-xs font-bold text-slate-800 dark:text-slate-100">{def.name}</p>
-                        <p className="text-[9px] text-slate-500 dark:text-slate-400">{def.subtitle}</p>
+            <div className={`wb-header py-3.5 px-4 flex items-center justify-between rounded-t-2xl ${def.color}-header transition-colors border-b border-white/50 dark:border-slate-800/50`}>
+                <div className="flex items-center gap-3">
+                    <span className="text-2xl drop-shadow-md">{def.icon}</span>
+                    <div className="pt-0.5">
+                        <p className="text-sm font-bold text-slate-800 dark:text-slate-100 tracking-tight leading-tight">{def.name}</p>
+                        <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400 mt-0.5 leading-tight">{def.subtitle}</p>
                     </div>
                 </div>
-                <div className="flex items-center gap-1.5">
-                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${getBadgeClass(def.color)}`}>{def.badge}</span>
+                <div className="flex items-center gap-2">
+                    <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-md ${getBadgeClass(def.color)} shadow-sm tracking-wide`}>{def.badge}</span>
                     <button 
                         onClick={onDelete} 
-                        className="text-slate-400 dark:text-slate-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 w-5 h-5 flex items-center justify-center rounded-full transition-colors pb-0.5" 
+                        className="text-slate-400/80 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/30 w-7 h-7 flex items-center justify-center rounded-full transition-all" 
                         title="Delete Block"
-                    >×</button>
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                    </button>
                 </div>
             </div>
             
-            <div className="wb-body p-3.5 text-xs text-slate-500 dark:text-slate-400 font-sans transition-colors">
+            <div className="wb-body p-4 text-xs text-slate-600 dark:text-slate-300 font-sans transition-colors bg-white dark:bg-slate-900/50 rounded-b-2xl">
                 {def.params.map((p: any, idx: number) => {
-                    if (p.type === 'slider') return <div key={idx} className="mb-2"><label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">{p.label}</label><div className="flex items-center gap-2"><input type="range" min={p.min} max={p.max} defaultValue={p.value} step={p.step} className="w-full accent-indigo-500"/><span className="text-[10px] font-mono shrink-0 dark:text-slate-400">{p.value}</span></div></div>;
-                    if (p.type === 'select') return <div key={idx} className="mb-2"><label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">{p.label}</label><select className="w-full text-[11px] border border-slate-200 dark:border-slate-700 rounded-md px-1.5 py-1 bg-slate-50 dark:bg-slate-900/50 dark:text-slate-200">{p.options.map((o:string) => <option key={o}>{o}</option>)}</select></div>;
-                    if (p.type === 'text') return <div key={idx} className="mb-2"><label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">{p.label}</label><input type="text" placeholder={p.placeholder} defaultValue={p.value} className="w-full text-[11px] border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1.5 bg-slate-50 dark:bg-slate-900/50 dark:text-slate-200 placeholder-slate-400 dark:placeholder-slate-500" /></div>;
-                    if (p.type === 'check') return <div key={idx} className="flex items-center gap-1.5 mt-2.5"><input type="checkbox" defaultChecked={p.checked} className="accent-indigo-500" /><span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">{p.label}</span></div>;
-                    if (p.type === 'button') return <button key={idx} className="w-full mt-1.5 text-[11px] px-3 py-1.5 bg-slate-100 dark:bg-slate-700/50 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-lg text-left transition font-semibold">{p.label}</button>;
+                    if (p.type === 'slider') {
+                        const step = p.step || 1;
+                        const increment = () => {
+                            const val = Math.min(p.max, Number((p.value + step).toFixed(4)));
+                            handleParamChange(idx, val);
+                        };
+                        const decrement = () => {
+                            const val = Math.max(p.min, Number((p.value - step).toFixed(4)));
+                            handleParamChange(idx, val);
+                        };
+
+                        return (
+                            <div key={idx} className="mb-4">
+                                <div className="flex justify-between items-center mb-1.5">
+                                    <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">{p.label}</label>
+                                    
+                                    <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm">
+                                        <button 
+                                            onClick={decrement}
+                                            className="w-5 h-5 flex items-center justify-center rounded-md hover:bg-white dark:hover:bg-slate-700 text-slate-400 hover:text-rose-500 transition-all active:scale-90"
+                                        >
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/></svg>
+                                        </button>
+                                        
+                                        <input
+                                            type="number"
+                                            value={p.value}
+                                            onChange={(e) => {
+                                                const val = Number(e.target.value);
+                                                if (!isNaN(val)) handleParamChange(idx, val);
+                                            }}
+                                            onBlur={(e) => {
+                                                let val = Number(e.target.value);
+                                                val = Math.round(val / step) * step;
+                                                if (val < p.min) val = p.min;
+                                                if (val > p.max) val = p.max;
+                                                handleParamChange(idx, Number(val.toFixed(4)));
+                                            }}
+                                            className="w-12 text-center bg-transparent border-none text-[11px] font-mono font-bold text-indigo-600 dark:text-indigo-400 focus:ring-0 p-0 appearance-none no-spinner"
+                                        />
+
+                                        <button 
+                                            onClick={increment}
+                                            className="w-5 h-5 flex items-center justify-center rounded-md hover:bg-white dark:hover:bg-slate-700 text-slate-400 hover:text-indigo-500 transition-all active:scale-90"
+                                        >
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="px-1">
+                                    <input 
+                                        type="range" 
+                                        min={p.min} 
+                                        max={p.max} 
+                                        value={p.value} 
+                                        step={p.step} 
+                                        onChange={(e) => handleParamChange(idx, Number(e.target.value))}
+                                        className="w-full accent-indigo-500 cursor-pointer h-1 rounded-lg appearance-none bg-slate-200 dark:bg-slate-800"
+                                    />
+                                    <div className="flex justify-between mt-1 text-[8px] text-slate-400 font-mono opacity-60">
+                                        <span>{p.min}</span>
+                                        <span>{p.max}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    }
+
+                    
+                    if (p.type === 'select') return (
+                        <div key={idx} className="mb-3">
+                            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">{p.label}</label>
+                            <select 
+                                value={p.value || p.options[0]}
+                                onChange={(e) => handleParamChange(idx, e.target.value)}
+                                className="w-full text-xs font-medium border border-slate-200 dark:border-slate-700/80 rounded-lg px-2.5 py-2 bg-slate-50 dark:bg-slate-800/80 dark:text-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                            >
+                                {p.options.map((o:string) => <option key={o} value={o}>{o}</option>)}
+                            </select>
+                        </div>
+                    );
+
+                    if (p.type === 'text') return (
+                        <div key={idx} className="mb-3">
+                            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">{p.label}</label>
+                            <input 
+                                type="text" 
+                                placeholder={p.placeholder} 
+                                value={p.value || ''} 
+                                onChange={(e) => handleParamChange(idx, e.target.value)}
+                                className="w-full text-xs font-medium border border-slate-200 dark:border-slate-700/80 rounded-lg px-3 py-2 bg-slate-50 dark:bg-slate-800/80 dark:text-slate-200 placeholder-slate-400 dark:placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 outline-none transition-all" 
+                            />
+                        </div>
+                    );
+
+                    if (p.type === 'check') return (
+                        <div key={idx} className="mb-3">
+                            <label className="flex items-center gap-2 group cursor-pointer">
+                                <input 
+                                    type="checkbox" 
+                                    checked={p.checked} 
+                                    onChange={(e) => handleParamChange(idx, e.target.checked, 'checked')}
+                                    className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 dark:border-slate-700 dark:bg-slate-800 transition-all cursor-pointer"
+                                />
+                                <span className="text-xs font-medium text-slate-700 dark:text-slate-300 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">{p.label}</span>
+                            </label>
+                        </div>
+                    );
+
+                    if (p.type === 'button') {
+                        const camStatus = cameraStatus[idx];
+                        const isCamTest = p.label === 'Check Connection' || p.label.includes('Test');
+                        return (
+                            <button
+                                key={idx}
+                                onClick={() => isCamTest ? testCamera(idx) : undefined}
+                                className={`w-full mt-2 text-xs px-4 py-2 rounded-xl text-center transition-colors font-bold shadow-sm active:scale-[0.98]
+                                    ${ isCamTest
+                                        ? camStatus === 'ok' ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border border-emerald-300'
+                                        : camStatus === 'error' ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 border border-red-300'
+                                        : camStatus === 'testing' ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 cursor-wait opacity-80'
+                                        : 'bg-slate-100 dark:bg-slate-700/60 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200'
+                                        : 'bg-slate-100 dark:bg-slate-700/60 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200'
+                                    }`}
+                            >
+                                { isCamTest
+                                    ? camStatus === 'ok' ? '✅ Connected!'
+                                    : camStatus === 'error' ? '❌ Connection Failed'
+                                    : camStatus === 'testing' ? '⏳ Checking...'
+                                    : p.label
+                                    : p.label
+                                }
+                            </button>
+                        );
+                    }
                     
                     if (p.type === 'dropzone') return (
-                        <div key={idx} className="mb-2 mt-2">
-                            <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">{p.label}</label>
-                            <label className="w-full text-[10px] text-center border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-xl p-4 bg-slate-50 dark:bg-slate-900/50 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer text-slate-500 dark:text-slate-400 flex flex-col items-center justify-center">
-                                <span className="text-xl mb-1 block">📂</span>
-                                <span className="font-semibold text-indigo-600 dark:text-indigo-400">Drag & Drop folder</span>
-                                <p className="text-[9px] mt-0.5 opacity-70">or click to upload images</p>
+                        <div key={idx} className="mb-3 mt-3">
+                            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">{p.label}</label>
+                            <label className="w-full text-[11px] text-center border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-xl p-5 bg-slate-50 dark:bg-slate-800/50 hover:bg-slate-100 dark:hover:bg-slate-800 hover:border-indigo-400 transition-all cursor-pointer text-slate-500 dark:text-slate-400 flex flex-col items-center justify-center group">
+                                <span className="text-2xl mb-1.5 block group-hover:scale-110 transition-transform">📂</span>
+                                <span className="font-bold text-indigo-600 dark:text-indigo-400">Drag & Drop folder</span>
+                                <p className="text-[10px] mt-1 opacity-70 font-medium">or click to upload images</p>
                                 <input type="file" {...{ webkitdirectory: "", directory: "" } as any} multiple className="hidden" />
                             </label>
                         </div>
                     );
 
-                    if (p.type === 'divider') return <div key={idx} className="border-t border-slate-200 dark:border-slate-700 mt-3 mb-1.5 pt-2"><label className="text-indigo-600 dark:text-indigo-400 font-bold text-[11px] block">{p.label}</label></div>;
+                    if (p.type === 'divider') return (
+                        <div key={idx} className="border-t border-slate-200 dark:border-slate-700 mt-4 mb-2 pt-3">
+                            <label className="text-indigo-600 dark:text-indigo-400 font-extrabold text-[10px] uppercase tracking-widest block">{p.label}</label>
+                        </div>
+                    );
                     
                     if (p.type === 'info') return (
-                        <div key={idx} className="mb-2 p-2 bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 rounded text-center">
-                            <label className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">{p.label}</label>
-                            <span className="text-xs font-mono font-bold text-slate-700 dark:text-slate-300">{p.text}</span>
+                        <div key={idx} className="mb-3 p-3 bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-100 dark:border-slate-800/50">
+                            <label className="block text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-1.5">{p.label}</label>
+                            <span className="text-[12px] font-mono font-bold text-slate-800 dark:text-slate-100">{p.text}</span>
                         </div>
                     );
 
                     if (p.type === 'progress') return (
-                        <div key={idx} className="mb-2 mt-3">
-                            <div className="flex justify-between items-center mb-1">
-                                <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">{p.label}</label>
-                                <span className="text-[10px] font-mono text-indigo-600 dark:text-indigo-400">{p.value}%</span>
+                        <div key={idx} className="mb-2 mt-3 p-1">
+                            <div className="flex justify-between items-center mb-1.5">
+                                <label className="text-[11px] font-bold text-slate-600 dark:text-slate-300">{p.label}</label>
+                                <span className="text-[10px] font-mono font-bold text-indigo-500">{p.value}%</span>
                             </div>
-                            <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-1.5">
-                                <div className="bg-indigo-500 dark:bg-indigo-400 h-1.5 rounded-full transition-all duration-300" style={{ width: `${p.value}%` }}></div>
+                            <div className="w-full bg-slate-200 dark:bg-slate-800 rounded-full h-2 overflow-hidden shadow-inner">
+                                <div 
+                                    className="bg-gradient-to-r from-indigo-500 to-indigo-400 h-full rounded-full transition-all duration-500 ease-out shadow-[0_0_10px_rgba(99,102,241,0.3)]" 
+                                    style={{ width: `${p.value}%` }}
+                                />
                             </div>
                         </div>
                     );
 
                     if (p.type === 'table') return (
                         <div key={idx} className="mb-2 mt-2">
-                            <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">{p.label}</label>
-                            <table className="w-full text-[10px] text-left border-collapse rounded overflow-hidden">
-                                <thead><tr className="bg-slate-100 dark:bg-slate-700">{p.columns.map((c:any, i:number)=><th key={i} className="px-1.5 py-1 border border-slate-200 dark:border-slate-800 dark:text-slate-200">{c}</th>)}</tr></thead>
-                                <tbody>
-                                    {p.data ? p.data.map((row:any[], ri:number) => (
-                                        <tr key={ri} className="bg-white dark:bg-slate-800">{row.map((cell:any, ci:number) => <td key={ci} className="px-1.5 py-1 border border-slate-200 dark:border-slate-700 font-mono text-[9px] dark:text-slate-300">{cell}</td>)}</tr>
-                                    )) : Array.from({length: p.rows}).map((_, ri) => (
-                                        <tr key={ri} className="bg-white dark:bg-slate-800">{p.columns.map((_, ci) => <td key={ci} className="px-1.5 py-1 border border-slate-200 dark:border-slate-700 text-slate-300 dark:text-slate-500 text-center">-</td>)}</tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                            <label className="block text-[10px] font-bold text-slate-400 dark:text-slate-500 mb-1.5 uppercase tracking-widest">{p.label}</label>
+                            <div className="rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 shadow-sm bg-white dark:bg-slate-800">
+                                <table className="w-full text-[10px] text-left border-collapse">
+                                    <thead><tr className="bg-slate-50 dark:bg-slate-900/50">{p.columns.map((c:any, i:number)=><th key={i} className="px-2 py-1.5 border-b border-slate-200 dark:border-slate-800 dark:text-slate-300 font-bold">{c}</th>)}</tr></thead>
+                                    <tbody>
+                                        {p.data ? p.data.map((row:any[], ri:number) => (
+                                            <tr key={ri} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors border-b last:border-0 border-slate-100 dark:border-slate-800/50">
+                                                {row.map((cell:any, ci:number) => <td key={ci} className="px-2 py-1.5 font-mono text-[9px] dark:text-slate-400">{cell}</td>)}
+                                            </tr>
+                                        )) : Array.from({length: p.rows}).map((_, ri) => (
+                                            <tr key={ri} className="border-b last:border-0 border-slate-100 dark:border-slate-800/50">
+                                                {p.columns.map((_, ci) => <td key={ci} className="px-2 py-1.5 text-slate-300 dark:text-slate-600 text-center">-</td>)}
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     );
 
                     if (p.type === 'matrix') return (
                         <div key={idx} className="mb-2 mt-2">
-                            <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300 mb-1">{p.label}</label>
-                            <table className="w-full text-[9px] text-center border-collapse">
-                                <thead><tr className="bg-slate-100 dark:bg-slate-700"><th className="p-1 border border-slate-200 dark:border-slate-800 font-normal text-slate-400">#</th>{p.headers.map((h:any, i:number)=><th key={i} className="p-1 border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300">{h}</th>)}</tr></thead>
-                                <tbody>
-                                    {p.headers.map((hLine:any, ri:number) => (
-                                        <tr key={ri} className="bg-white dark:bg-slate-800">
-                                            <th className="p-1 border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300">{hLine}</th>
-                                            {p.headers.map((_:any, ci:number) => <td key={ci} className={`p-1 border border-slate-200 dark:border-slate-700 ${ri === ci ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 font-bold' : 'text-slate-300 dark:text-slate-600'}`}>{ri === ci ? '1.0' : '0.0'}</td>)}
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                            <label className="block text-[10px] font-bold text-slate-400 dark:text-slate-500 mb-1.5 uppercase tracking-widest">{p.label}</label>
+                            <div className="rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 shadow-sm bg-white dark:bg-slate-800">
+                                <table className="w-full text-[9px] text-center border-collapse">
+                                    <thead><tr className="bg-slate-50 dark:bg-slate-900/50"><th className="p-1 border-b border-r border-slate-200 dark:border-slate-800 font-normal text-slate-400">#</th>{p.headers.map((h:any, i:number)=><th key={i} className="p-1.5 border-b border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-200 font-bold">{h}</th>)}</tr></thead>
+                                    <tbody>
+                                        {p.headers.map((hLine:any, ri:number) => (
+                                            <tr key={ri} className="border-b last:border-0 border-slate-100 dark:border-slate-800/50">
+                                                <th className="p-1.5 border-r border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/30 text-slate-600 dark:text-slate-300 font-bold">{hLine}</th>
+                                                {p.headers.map((_:any, ci:number) => <td key={ci} className={`p-1.5 font-mono ${ri === ci ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 font-bold' : 'text-slate-300 dark:text-slate-600'}`}>{ri === ci ? '1.0' : '0.0'}</td>)}
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     );
 
@@ -132,12 +308,13 @@ export default function CustomNode({ id, data, selected }: any) {
                 })}
             </div>
 
+
             {/* Output Handle (ลากเส้นออกไปหาคนอื่น) */}
             {hasSourceHandle && (
                 <Handle 
                     type="source" 
                     position={Position.Right} 
-                    className="w-3.5 h-3.5 bg-white dark:bg-slate-800 border-2 border-slate-400 dark:border-slate-500 rounded-full hover:bg-indigo-400 hover:border-indigo-400 -right-2 transition-colors" 
+                    className="w-4 h-4 bg-white dark:bg-slate-800 border-2 border-slate-400 dark:border-slate-500 rounded-full hover:bg-indigo-500 hover:border-indigo-500 hover:scale-125 -right-2 transition-all shadow-sm" 
                 />
             )}
         </div>

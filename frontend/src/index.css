@@ -2,15 +2,43 @@
 @custom-variant dark (&:where(.dark, .dark *));
 @import "@xyflow/react/dist/style.css";
 
+@theme {
+  --font-sans: "Inter", "Prompt", sans-serif;
+}
+
 html, body {
     margin: 0;
     padding: 0;
     width: 100vw;
     height: 100vh;
+    font-family: var(--font-sans);
     overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
 }
 
-/* Base tailwind resets / adjustments if needed */
+/* ===== Custom scrollbar (Modern & Minimal) ===== */
+::-webkit-scrollbar { 
+    width: 6px; 
+    height: 6px; 
+}
+::-webkit-scrollbar-track { 
+    background: transparent; 
+}
+::-webkit-scrollbar-thumb { 
+    background: rgba(148, 163, 184, 0.4); 
+    border-radius: 10px; 
+}
+::-webkit-scrollbar-thumb:hover { 
+    background: rgba(148, 163, 184, 0.7); 
+}
+.dark ::-webkit-scrollbar-thumb { 
+    background: rgba(71, 85, 105, 0.5); 
+}
+.dark ::-webkit-scrollbar-thumb:hover { 
+    background: rgba(100, 116, 139, 0.8); 
+}
 
 /* ===== Active Category Button ===== */
 .cat-btn.active {
@@ -18,99 +46,77 @@ html, body {
     color: #4F46E5;
     box-shadow: inset 0 0 0 2px #C7D2FE;
 }
+.dark .cat-btn.active {
+    background-color: rgba(49, 46, 129, 0.3);
+    color: #818CF8;
+    box-shadow: inset 0 0 0 1px #4F46E5;
+}
 
 /* ===== Block Cards in Sidebar ===== */
 .block-card {
-    border-radius: 12px;
-    padding: 10px 12px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
+    border-radius: 14px;
     cursor: grab;
-    transition: all 0.15s ease;
-    border: 1.5px solid transparent;
+    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    border: 1px solid transparent;
 }
 .block-card:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    transform: translateY(-3px);
+    box-shadow: 0 10px 25px -5px rgba(0,0,0,0.08), 0 8px 10px -6px rgba(0,0,0,0.04);
+}
+.dark .block-card:hover {
+    box-shadow: 0 10px 25px -5px rgba(0,0,0,0.4), 0 8px 10px -6px rgba(0,0,0,0.2);
 }
 .block-card:active {
     cursor: grabbing;
-    transform: scale(0.98);
+    transform: scale(0.97);
 }
 .block-card .badge {
     font-size: 9px;
     font-weight: 700;
-    padding: 2px 6px;
-    border-radius: 4px;
+    padding: 3px 6px;
+    border-radius: 6px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
 }
 
 /* Block card color schemes */
-.block-card.blue { background: #EFF6FF; border-color: #BFDBFE; }
-.block-card.blue .badge { background: #BFDBFE; color: #1E40AF; }
+.block-card.blue { background: #F0F9FF; border-color: #E0F2FE; }
+.block-card.blue .badge { background: #DBEAFE; color: #1E3A8A; }
 
-.block-card.purple { background: #F5F3FF; border-color: #DDD6FE; }
-.block-card.purple .badge { background: #DDD6FE; color: #5B21B6; }
+.block-card.purple { background: #F5F3FF; border-color: #EDE9FE; }
+.block-card.purple .badge { background: #EDE9FE; color: #4C1D95; }
 
-.block-card.green { background: #ECFDF5; border-color: #A7F3D0; }
-.block-card.green .badge { background: #A7F3D0; color: #065F46; }
+.block-card.green { background: #ECFDF5; border-color: #D1FAE5; }
+.block-card.green .badge { background: #D1FAE5; color: #064E3B; }
 
-.block-card.amber { background: #FFFBEB; border-color: #FDE68A; }
-.block-card.amber .badge { background: #FDE68A; color: #92400E; }
+.block-card.amber { background: #FFFBEB; border-color: #FEF3C7; }
+.block-card.amber .badge { background: #FEF3C7; color: #78350F; }
 
-.block-card.rose { background: #FFF1F2; border-color: #FECDD3; }
-.block-card.rose .badge { background: #FECDD3; color: #9F1239; }
+.block-card.rose { background: #FFF1F2; border-color: #FFE4E6; }
+.block-card.rose .badge { background: #FFE4E6; color: #881337; }
 
-/* ===== Active Category Button ===== */
-.workspace-block .wb-body {
-    padding: 12px 14px;
-    font-size: 12px;
-    color: #64748B;
-}
-.workspace-block .wb-body label {
-    display: block;
-    font-size: 11px;
-    font-weight: 600;
-    color: #475569;
-    margin-bottom: 4px;
-    margin-top: 8px;
-}
-.workspace-block .wb-body label:first-child {
-    margin-top: 0;
-}
+/* Dark mode block cards */
+.dark .block-card { background: rgba(30, 41, 59, 0.5); border-color: rgba(51, 65, 85, 0.5); }
+.dark .block-card .badge { background: rgba(15, 23, 42, 0.6); color: #94A3B8; border: 1px solid rgba(71, 85, 105, 0.5); }
 
 /* Color-coded headers in React Flow custom nodes */
-.blue-header { background: #EFF6FF; }
-.dark .blue-header { background: rgba(30, 64, 175, 0.2); }
+.blue-header { background: #F0F9FF; }
+.dark .blue-header { background: rgba(30, 64, 175, 0.15); border-bottom: 1px solid rgba(30, 64, 175, 0.3); }
 .purple-header { background: #F5F3FF; }
-.dark .purple-header { background: rgba(91, 33, 182, 0.2); }
+.dark .purple-header { background: rgba(91, 33, 182, 0.15); border-bottom: 1px solid rgba(91, 33, 182, 0.3); }
 .green-header { background: #ECFDF5; }
-.dark .green-header { background: rgba(6, 95, 70, 0.2); }
+.dark .green-header { background: rgba(6, 95, 70, 0.15); border-bottom: 1px solid rgba(6, 95, 70, 0.3); }
 .amber-header { background: #FFFBEB; }
-.dark .amber-header { background: rgba(146, 64, 14, 0.2); }
+.dark .amber-header { background: rgba(146, 64, 14, 0.15); border-bottom: 1px solid rgba(146, 64, 14, 0.3); }
 .rose-header { background: #FFF1F2; }
-.dark .rose-header { background: rgba(159, 18, 57, 0.2); }
+.dark .rose-header { background: rgba(159, 18, 57, 0.15); border-bottom: 1px solid rgba(159, 18, 57, 0.3); }
 
-/* ===== Custom scrollbar ===== */
-::-webkit-scrollbar { width: 5px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 10px; }
-::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
-
-/* ===== Widget styling inside workspace blocks ===== */
-.wb-body select, .wb-body input[type="range"] {
-    width: 100%;
-    font-size: 11px;
-    border: 1px solid #E2E8F0;
-    border-radius: 6px;
-    padding: 4px 6px;
-    background: #F8FAFC;
-    color: #334155;
+/* ===== Hide Native Numeric Spinners ===== */
+input[type="number"] {
+  -moz-appearance: textfield;
 }
-.wb-body input[type="range"] {
-    border: none;
-    padding: 0;
-    accent-color: #6366F1;
+input::-webkit-outer-spin-button,
+input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }

@@ -12,14 +12,22 @@ import {
 } from '@xyflow/react';
 import type { Connection, Edge, ReactFlowInstance, Node } from '@xyflow/react';
 import CustomNode from './CustomNode';
+import RobotStreamNode from './RobotStreamNode';
+import WebcamStreamNode from './WebcamStreamNode';
+import MonitorNode from './MonitorNode';
 
-const nodeTypes = { custom: CustomNode };
-
-
+const nodeTypes = { 
+  custom: CustomNode, 
+  'robot-stream': RobotStreamNode,
+  'webcam-stream': WebcamStreamNode,
+  'monitor-node': MonitorNode
+};
 
 function AppContent() {
   const [activeCategory, setActiveCategory] = useState<'input' | 'model' | 'training' | 'output' | 'viz'>('input');
-  const [isDark, setIsDark] = useState(true); // default to dark
+  const [isDark, setIsDark] = useState(false);
+  const [user, setUser] = useState<any>(null);
+  const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
   
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -27,70 +35,183 @@ function AppContent() {
 
   const [savedWorkspaces, setSavedWorkspaces] = useState<any[]>([]);
   const [currentProjectId, setCurrentProjectId] = useState<number | null>(null);
+  const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const [blockCounter, setBlockCounter] = useState(0);
+  const [showSettings, setShowSettings] = useState(false);
+  const [loadingProjectId, setLoadingProjectId] = useState<number | null>(null);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [activeMonitorFrame, setActiveMonitorFrame] = useState<string | null>(null);
+  const [monitorPoweredOn, setMonitorPoweredOn] = useState(false);
+  const settingsRef = useRef<HTMLDivElement>(null);
+
+  // Monitor frame state listener
+  useEffect(() => {
+    const handleFrame = (e: any) => {
+        if (monitorPoweredOn) setActiveMonitorFrame(e.detail);
+    };
+    const handlePower = (e: any) => {
+        setMonitorPoweredOn(e.detail.active);
+        if (!e.detail.active) setActiveMonitorFrame(null);
+    };
+    window.addEventListener('live-monitor-frame', handleFrame);
+    window.addEventListener('monitor-power-change', handlePower);
+    return () => {
+        window.removeEventListener('live-monitor-frame', handleFrame);
+        window.removeEventListener('monitor-power-change', handlePower);
+    };
+  }, [monitorPoweredOn]);
+
+  // Auth States
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
 
   useEffect(() => { 
-    fetchWorkspaces();
+    if (token) {
+        setUser({ username: 'User' });
+        fetchWorkspaces();
+    }
+  }, [token]);
+
+  // ปิด Settings popup เมื่อคลิกที่อื่นนอก popup
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
+        setShowSettings(false);
+      }
+    };
+    if (showSettings) {
+      // ใช้ capture=true เพื่อให้รับ event ก่อน ReactFlow จะกิน event
+      document.addEventListener('mousedown', handleClickOutside, true);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside, true);
+  }, [showSettings]);
+
+  const onSelectionChange = useCallback(({ nodes }: { nodes: Node[] }) => {
+    setSelectedNode(nodes.length > 0 ? nodes[0] : null);
   }, []);
 
   const fetchWorkspaces = async () => {
     try {
-      const res = await fetch('http://localhost:3000/api/projects');
+      const res = await fetch('http://localhost:3000/api/projects', {
+          headers: { 'Authorization': `Bearer ${token}` }
+      });
       const data = await res.json();
-      setSavedWorkspaces(data);
-    } catch (e) {
-      console.error("Failed to fetch projects", e);
-    }
+      if (res.ok) setSavedWorkspaces(data);
+    } catch (e) { console.error("Fetch failed", e); }
+  };
+
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const endpoint = authMode === 'login' ? 'login' : 'register';
+    try {
+        const res = await fetch(`http://localhost:3000/api/auth/${endpoint}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            if (authMode === 'login') {
+                localStorage.setItem('token', data.token);
+                setToken(data.token);
+                setUser(data.user);
+            } else {
+                alert("Registered! Now please login.");
+                setAuthMode('login');
+            }
+        } else {
+            alert(data.error);
+        }
+    } catch (e) { alert("Auth failed"); }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    setToken(null);
+    setUser(null);
+    setSavedWorkspaces([]);
+    setNodes([]);
+    setEdges([]);
+    setCurrentProjectId(null);
   };
 
   const handleSave = async () => {
+    setSaveStatus('saving');
     try {
       const payload = { 
-        name: `Project ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`, 
+        name: `Workspace ${new Date().toLocaleDateString('en-GB')} ${new Date().toLocaleTimeString('en-GB')}`, 
         flow_data: { nodes, edges },
         project_id: currentProjectId 
       };
+      
       const res = await fetch('http://localhost:3000/api/save-flow', { 
         method: 'POST', 
-        headers: { 'Content-Type': 'application/json' }, 
+        headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+        }, 
         body: JSON.stringify(payload) 
       });
+      
       const result = await res.json();
+      
+      if (!res.ok) {
+          throw new Error(result.error || 'Failed to save to database');
+      }
+      
       if (result.project_id) setCurrentProjectId(result.project_id);
-      fetchWorkspaces();
-      alert("Project Saved!");
-    } catch (e) { alert("Save failed. Is backend running?"); }
+      await fetchWorkspaces();
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus('idle'), 2500);
+    } catch (e: any) { 
+        console.error("Save error:", e);
+        setSaveStatus('error');
+        setTimeout(() => setSaveStatus('idle'), 3000);
+    }
   };
 
   const handleLoadProject = async (id: number) => {
+    if (loadingProjectId === id) return; // ป้องกัน double click
+    setLoadingProjectId(id);
     try {
-      const res = await fetch(`http://localhost:3000/api/projects/${id}/flow`);
+      const res = await fetch(`http://localhost:3000/api/projects/${id}/flow`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+      });
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Load failed');
       if (data.flow_data) {
         setNodes(data.flow_data.nodes || []);
         setEdges(data.flow_data.edges || []);
         setCurrentProjectId(id);
       }
-    } catch (e) { alert("Load failed."); }
+    } catch (e: any) { 
+      alert(`❌ Load failed: ${e.message}`);
+    } finally {
+      setLoadingProjectId(null);
+    }
   };
 
   const handleDelete = async (id: number) => {
     try {
-      await fetch(`http://localhost:3000/api/projects/${id}`, { method: 'DELETE' });
+      await fetch(`http://localhost:3000/api/projects/${id}`, { 
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+      });
       if (currentProjectId === id) setCurrentProjectId(null);
       fetchWorkspaces();
     } catch(e) { alert("Delete failed."); }
   };
 
   const handleTrain = async () => {
-    if (!currentProjectId) {
-        alert("Please save your project first before training!");
-        return;
-    }
+    if (!currentProjectId) { alert("Please save your project first!"); return; }
     try {
         const res = await fetch('http://localhost:3000/api/train/start', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
             body: JSON.stringify({ project_id: currentProjectId, hyperparams: {} })
         });
         const data = await res.json();
@@ -108,7 +229,6 @@ function AppContent() {
   };
 
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
-
   const onDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
@@ -117,13 +237,9 @@ function AppContent() {
   const onDrop = useCallback(
     (event: React.DragEvent) => {
       event.preventDefault();
-
       const defId = event.dataTransfer.getData('defId');
-      if (!defId || !reactFlowInstance || !reactFlowWrapper.current) {
-        return;
-      }
+      if (!defId || !reactFlowInstance || !reactFlowWrapper.current) return;
 
-      // Find block definition
       let def: any = null;
       Object.values(BLOCKS).forEach(arr => {
           const found = arr.find(b => b.id === defId);
@@ -139,9 +255,11 @@ function AppContent() {
 
       const newNode: Node = {
         id: `node_${blockCounter}`,
-        type: 'custom',
+        type: defId === 'robot-stream' ? 'robot-stream' : 
+              defId === 'webcam-input' ? 'webcam-stream' : 
+              defId === 'live-monitor' ? 'monitor-node' : 'custom',
         position,
-        data: { def },
+        data: { def: JSON.parse(JSON.stringify(def)) },
       };
 
       setNodes((nds) => nds.concat(newNode));
@@ -149,6 +267,41 @@ function AppContent() {
     },
     [reactFlowInstance, blockCounter, setNodes]
   );
+
+  if (!token) {
+      return (
+          <div className="h-screen w-screen bg-gradient-to-br from-slate-900 to-slate-950 flex items-center justify-center font-sans antialiased text-slate-200">
+              <div className="w-full max-w-md p-10 bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-3xl shadow-[0_0_40px_rgba(79,70,229,0.15)] relative overflow-hidden">
+                  <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-indigo-500 via-purple-500 to-emerald-500" />
+                  <div className="flex flex-col items-center mb-8">
+                      <div className="w-16 h-16 bg-gradient-to-tr from-indigo-600 to-violet-500 rounded-2xl flex items-center justify-center text-white font-extrabold text-3xl mb-5 shadow-lg shadow-indigo-500/30 ring-4 ring-slate-800">R</div>
+                      <h1 className="text-3xl font-bold tracking-tight text-white mb-2">Robo Learn AI</h1>
+                      <p className="text-slate-400 text-sm font-medium">{authMode === 'login' ? 'Welcome back! Please login to your workspace.' : 'Create an account to start your AI journey.'}</p>
+                  </div>
+                  
+                  <form onSubmit={handleAuth} className="space-y-5">
+                      <div>
+                          <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 ml-1">Username</label>
+                          <input type="text" value={username} onChange={e => setUsername(e.target.value)} required className="w-full bg-slate-950/50 border border-slate-700/80 rounded-xl px-4 py-3.5 text-slate-100 font-medium placeholder-slate-600 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all shadow-inner" placeholder="Enter username..." />
+                      </div>
+                      <div>
+                          <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 ml-1">Password</label>
+                          <input type="password" value={password} onChange={e => setPassword(e.target.value)} required className="w-full bg-slate-950/50 border border-slate-700/80 rounded-xl px-4 py-3.5 text-slate-100 font-medium placeholder-slate-600 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all shadow-inner" placeholder="Enter password..." />
+                      </div>
+                      <button type="submit" className="w-full bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-indigo-500/25 transition-all active:scale-[0.98] mt-4 tracking-wide">
+                          {authMode === 'login' ? 'Login to Workspace' : 'Create Account'}
+                      </button>
+                  </form>
+
+                  <div className="mt-8 text-center pt-6 border-t border-slate-800">
+                      <button onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} className="text-sm text-indigo-400 hover:text-indigo-300 font-medium tracking-wide transition-colors">
+                          {authMode === 'login' ? "Don't have an account? Register" : "Already have an account? Login"}
+                      </button>
+                  </div>
+              </div>
+          </div>
+      );
+  }
 
   const categories = [
     { id: 'input', icon: '📷', label: 'Image Data', color: 'blue' },
@@ -166,81 +319,139 @@ function AppContent() {
       <div className="flex flex-1 overflow-hidden">
         
         {/* Left Icon Sidebar */}
-        <nav className="w-[80px] bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col items-center py-4 gap-1 shrink-0 transition-colors">
-          <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white font-bold text-lg mb-1 shadow-lg shadow-indigo-500/20">R</div>
-          <p className="text-[9px] font-semibold text-slate-500 dark:text-slate-400 mb-4 leading-tight text-center">Robo Learn AI</p>
+        <nav className="w-[88px] bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col items-center py-5 gap-2 shrink-0 transition-colors z-10 shadow-[2px_0_10px_-3px_rgba(0,0,0,0.05)] dark:shadow-none">
+          <div className="w-12 h-12 bg-gradient-to-br from-indigo-500 to-indigo-700 rounded-xl flex items-center justify-center text-white font-black text-2xl mb-1 shadow-lg shadow-indigo-500/30">R</div>
+          <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 mb-5 leading-tight text-center tracking-wide">Robo Learn AI</p>
 
-          <button onClick={() => setIsDark(!isDark)} className="w-10 h-10 mb-4 rounded-xl shadow-inner bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center justify-center transition-all">
+          <button onClick={() => setIsDark(!isDark)} className="w-12 h-12 mb-3 rounded-xl shadow-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center justify-center transition-all text-xl hover:scale-105 active:scale-95">
              {isDark ? '☀️' : '🌙'}
           </button>
 
           {categories.map((cat, i) => (
             <React.Fragment key={cat.id}>
-              {i === 0 && <p className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">Input</p>}
-              {i === 1 && <p className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mt-3 mb-1">AI Model</p>}
-              {i === 2 && <p className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mt-3 mb-1">Output</p>}
-              {i === 3 && <p className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mt-3 mb-1">Training</p>}
-              {i === 4 && <p className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mt-3 mb-1">Visualization</p>}
               <button 
                 onClick={() => setActiveCategory(cat.id as any)}
-                className={`cat-btn w-14 h-14 rounded-xl flex flex-col items-center justify-center gap-0.5 text-slate-500 dark:text-slate-400 transition-all ${activeCategory === cat.id ? 'active dark:bg-indigo-900/30 dark:text-indigo-400 dark:shadow-[inset_0_0_0_2px_#4F46E5]' : `hover:bg-${cat.color}-50 dark:hover:bg-slate-800 hover:text-${cat.color}-600 dark:hover:text-${cat.color}-400`}`}
+                className={`cat-btn w-[72px] h-[72px] rounded-xl flex flex-col items-center justify-center gap-1.5 transition-all outline-none mx-2 mb-2 ${activeCategory === cat.id ? 'bg-indigo-50 text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-300 shadow-[inset_0_0_0_2px_#6366f1]' : `text-slate-500 dark:text-slate-400 hover:bg-${cat.color}-50 dark:hover:bg-slate-800 hover:text-${cat.color}-600 dark:hover:text-${cat.color}-400`}`}
+                title={cat.label}
               >
-                <span className="text-xl">{cat.icon}</span>
-                <span className="text-[9px] font-medium">{cat.label}</span>
+                <span className="text-2xl drop-shadow-sm group-hover:scale-110 transition-transform">{cat.icon}</span>
+                <span className="text-[9px] font-black uppercase tracking-widest">{cat.id}</span>
               </button>
             </React.Fragment>
           ))}
+
+          {/* Settings / Profile Button - Pinned to bottom */}
+          <div ref={settingsRef} className="relative mt-auto mb-4">
+            <button 
+                onClick={() => setShowSettings(!showSettings)}
+                className={`w-12 h-12 rounded-full flex items-center justify-center text-xl transition-all ${showSettings ? 'bg-indigo-100 dark:bg-indigo-900/40 border-2 border-indigo-500' : 'bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700'}`}
+            >
+                ⚙️
+            </button>
+
+            {showSettings && (
+                <div className="absolute bottom-0 left-16 w-56 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl z-50 p-2 animate-in fade-in slide-in-from-left-2 duration-200">
+                    <div className="px-3 py-3 border-b border-slate-100 dark:border-slate-800 mb-1">
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Logged in as</p>
+                        <p className="text-sm font-bold text-slate-800 dark:text-slate-100 truncate">@{user?.username || 'Guest'}</p>
+                        <p className="text-[10px] text-indigo-500 font-medium">User ID: {user?.id ? `ID #${user.id}` : 'N/A'}</p>
+                    </div>
+                    
+                    <button className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg transition-colors flex items-center gap-2">
+                        👤 Profile Settings
+                    </button>
+                    
+                    <button 
+                        onClick={handleLogout}
+                        className="w-full text-left px-3 py-2 text-xs font-bold text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors flex items-center gap-2"
+                    >
+                        🚪 Logout from Robo Learn
+                    </button>
+                </div>
+            )}
+          </div>
         </nav>
 
-        {/* Block List Panel */}
-        <aside className="w-[260px] bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col shrink-0 overflow-hidden transition-colors">
-            <div className="p-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50">
-                <h3 className="text-xs font-bold text-slate-700 dark:text-slate-300 mb-2">Saved Workspaces</h3>
-                <div className="flex gap-2">
-                    <button onClick={handleSave} className="flex-1 py-1.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded text-[10px] font-bold hover:bg-slate-50 dark:hover:bg-slate-700 transition">💾 Save State</button>
+        {/* Block List Panel (on the Left again) */}
+        <aside className="w-[300px] bg-slate-50 dark:bg-slate-900/80 border-r border-slate-200 dark:border-slate-800 flex flex-col shrink-0 overflow-hidden transition-colors z-[5] shadow-[inset_-5px_0_15px_-10px_rgba(0,0,0,0.05)] dark:shadow-none">
+            <div className="p-5 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm z-10">
+                <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200 tracking-wide">Saved Workspaces</h3>
+                    <span className="text-[11px] bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 px-2 py-0.5 rounded-full font-bold border border-indigo-200 dark:border-indigo-800">@{user?.username}</span>
                 </div>
-                <div className="mt-2 space-y-1 max-h-40 overflow-y-auto">
+                <div className="flex gap-2">
+                    <button 
+                      onClick={handleSave} 
+                      disabled={saveStatus === 'saving'}
+                      className={`flex-1 py-2 border text-white rounded-lg text-xs font-bold transition-all shadow-md active:scale-95 flex items-center justify-center gap-1.5
+                        ${ saveStatus === 'saving' ? 'bg-slate-400 border-slate-400 cursor-wait' 
+                          : saveStatus === 'saved' ? 'bg-emerald-500 border-emerald-500 shadow-emerald-500/20' 
+                          : saveStatus === 'error' ? 'bg-red-500 border-red-500 shadow-red-500/20' 
+                          : 'bg-indigo-600 hover:bg-indigo-500 border-transparent shadow-indigo-500/20'}`}
+                    >
+                      <span className="text-sm">
+                        {saveStatus === 'saving' ? '⏳' : saveStatus === 'saved' ? '✅' : saveStatus === 'error' ? '❌' : '💾'}
+                      </span>
+                      {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved!' : saveStatus === 'error' ? 'Failed!' : 'Save State'}
+                    </button>
+                    <button onClick={() => { setNodes([]); setEdges([]); setCurrentProjectId(null); }} className="py-2 px-3 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded-lg text-xs font-bold hover:bg-slate-50 dark:hover:bg-slate-700 transition active:scale-95">➕ New</button>
+                </div>
+                <div className="mt-3 space-y-1.5 max-h-[160px] overflow-y-auto pr-1">
+                    {savedWorkspaces.length === 0 && (
+                      <p className="text-center text-[11px] text-slate-400 dark:text-slate-600 py-3 italic">No saved workspaces yet</p>
+                    )}
                     {savedWorkspaces.map(ws => (
-                        <div key={ws.id} className={`flex items-center justify-between px-2 py-1 text-[10px] border rounded transition-colors ${currentProjectId === ws.id ? 'bg-indigo-50 border-indigo-300 dark:bg-indigo-900/30 dark:border-indigo-700' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'}`}>
-                            <span className="truncate w-32 cursor-pointer text-slate-700 dark:text-slate-300 font-medium" onClick={() => handleLoadProject(ws.id)}>{ws.name}</span>
-                            <button onClick={() => handleDelete(ws.id)} className="text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300">Delete</button>
+                        <div 
+                          key={ws.id} 
+                          onClick={() => handleLoadProject(ws.id)}
+                          className={`group flex items-center gap-2.5 px-3 py-2.5 text-xs border rounded-xl transition-all cursor-pointer select-none
+                            ${ loadingProjectId === ws.id ? 'opacity-60 cursor-wait' : ''}
+                            ${ currentProjectId === ws.id 
+                              ? 'bg-indigo-50 border-indigo-300 dark:bg-indigo-900/30 dark:border-indigo-600/50 shadow-sm ring-1 ring-indigo-200 dark:ring-indigo-800' 
+                              : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:bg-indigo-50 hover:border-indigo-200 dark:hover:bg-indigo-900/20 dark:hover:border-indigo-700 hover:shadow-sm'}`}
+                        >
+                          <span className="text-base shrink-0">{loadingProjectId === ws.id ? '⏳' : currentProjectId === ws.id ? '📂' : '📁'}</span>
+                          <div className="flex-1 min-w-0">
+                            <p className={`font-semibold truncate leading-tight ${ currentProjectId === ws.id ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-300'}`}>{ws.name}</p>
+                            <p className="text-[9px] text-slate-400 dark:text-slate-500 font-medium mt-0.5">{ws.updated_at ? new Date(ws.updated_at).toLocaleString('en-GB') : ''}</p>
+                          </div>
+                          {currentProjectId === ws.id && <span className="text-[8px] bg-indigo-500 text-white px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wider shrink-0">Active</span>}
+                          <button 
+                            onClick={e => { e.stopPropagation(); handleDelete(ws.id); }} 
+                            className="text-slate-300 hover:text-red-500 dark:text-slate-600 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all p-0.5 rounded shrink-0"
+                          >🗑️</button>
                         </div>
                     ))}
                 </div>
             </div>
 
-            <div className="p-4 border-b border-slate-100 dark:border-slate-800">
-                <h2 className="text-sm font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">{panelTitles[activeCategory]}</h2>
-                <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">Drag to workspace to spawn</p>
+            <div className="p-5 pb-3">
+                <h2 className="text-[15px] font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">{panelTitles[activeCategory]}</h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Drag and drop blocks to the workspace</p>
                 {currentProjectId && (
-                   <div className="mt-2 px-2 py-1 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-100 dark:border-emerald-800/30 rounded text-[9px] text-emerald-700 dark:text-emerald-400 font-bold">
-                       Editing ID: {currentProjectId}
-                   </div>
+                    <div className="mt-3 px-3 py-1.5 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800/50 rounded-lg text-xs text-emerald-700 dark:text-emerald-400 font-bold flex items-center gap-1.5 shadow-sm">
+                        <span className="flex h-2 w-2 relative">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                        </span>
+                        Active ID: #{currentProjectId}
+                    </div>
                 )}
             </div>
             
-            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            <div className="flex-1 overflow-y-auto p-4 grid grid-cols-2 gap-3 content-start">
                 {activeBlocks.map(block => (
                     <div key={block.id} draggable onDragStart={(e) => startDragNewBlock(e, block.id)}
-                         className={`block-card ${block.color} dark:bg-slate-800 dark:border-slate-700`}>
-                        <span className="text-2xl">{block.icon}</span>
-                        <div className="flex-1 min-w-0">
-                            <p className="text-sm font-bold text-slate-800 dark:text-slate-200 truncate">{block.name}</p>
-                            <p className="text-[10px] text-slate-500 dark:text-slate-400">{block.subtitle}</p>
+                         className={`block-card ${block.color} flex flex-col items-center justify-center text-center p-3 sm:p-4 relative dark:bg-slate-800/90 dark:border-slate-700/80 bg-white backdrop-blur-sm aspect-square group`}>
+                        <span className="absolute top-2 right-2 badge bg-white/50 dark:bg-slate-700/50 shadow-[0_2px_4px_rgba(0,0,0,0.02)] scale-[0.85] origin-top-right transition-transform group-hover:scale-95">{block.badge}</span>
+                        <span className="text-4xl drop-shadow-sm mb-3 mt-1 group-hover:scale-110 transition-transform duration-300">{block.icon}</span>
+                        <div className="w-full min-w-0 mt-auto">
+                            <p className="text-[11px] sm:text-xs font-bold text-slate-800 dark:text-slate-100 truncate leading-tight mb-0.5 tracking-wide">{block.name}</p>
+                            <p className="text-[9px] text-slate-500 dark:text-slate-400 font-medium leading-tight line-clamp-2 px-1">{block.subtitle}</p>
                         </div>
-                        <span className="badge bg-slate-200 dark:bg-slate-700 dark:text-slate-300">{block.badge}</span>
                     </div>
                 ))}
             </div>
-
-            {activeBlocks.length > 0 && activeBlocks[0].insight && (
-                <div className="mx-3 mb-3 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/30 rounded-xl shrink-0 transition-colors">
-                    <p className="text-xs font-semibold text-amber-800 dark:text-amber-400 flex items-center gap-1">💡 Math Insight</p>
-                    <p className="text-xs font-bold text-slate-700 dark:text-slate-200 mt-1">{activeBlocks[0].insight.title}</p>
-                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">{activeBlocks[0].insight.text}</p>
-                    <code className="block text-[10px] text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-950 rounded px-2 py-1 mt-2 font-mono">{activeBlocks[0].insight.formula}</code>
-                </div>
-            )}
         </aside>
 
         {/* Main Workspace */}
@@ -256,6 +467,7 @@ function AppContent() {
                 onInit={setReactFlowInstance}
                 onDrop={onDrop}
                 onDragOver={onDragOver}
+                onSelectionChange={onSelectionChange}
                 nodeTypes={nodeTypes}
                 deleteKeyCode={['Delete', 'Backspace']}
                 fitView
@@ -263,100 +475,93 @@ function AppContent() {
                 <Background color={isDark ? '#334155' : '#cbd5e1'} />
                 <Controls className="dark:bg-slate-800 dark:border-slate-700 dark:fill-slate-200" />
               </ReactFlow>
-
-              {nodes.length === 0 && (
-                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
-                      <div className="text-center opacity-30">
-                          <p className="text-slate-500 dark:text-slate-400 text-sm font-medium">Drag blocks from sidebar to build your pipeline</p>
-                      </div>
-                  </div>
-              )}
             </div>
-            
-            <div className="h-8 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between px-4 text-[11px] text-slate-400 dark:text-slate-500 shrink-0 transition-colors">
-                <span>{nodes.length} blocks · {edges.length} connections</span>
-                <span>📷 Input → 🧠 Model → 📊 Output</span>
+            <div className="h-9 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between px-5 text-xs text-slate-500 dark:text-slate-400 font-medium shrink-0 transition-colors z-10 shadow-[0_-2px_10px_rgba(0,0,0,0.02)]">
+                <div className="flex items-center gap-3">
+                    <span className="flex items-center gap-1.5"><code className="bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded text-[10px] font-bold text-slate-600 dark:text-slate-300">{nodes.length}</code> Blocks</span>
+                    <span className="text-slate-300 dark:text-slate-700">|</span>
+                    <span className="flex items-center gap-1.5"><code className="bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded text-[10px] font-bold text-slate-600 dark:text-slate-300">{edges.length}</code> Connections</span>
+                </div>
+                <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    Workspace Active
+                </div>
             </div>
         </main>
 
-        {/* Right Panel (Database Inspector) */}
-        <aside className="w-[350px] bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 flex flex-col shrink-0 overflow-hidden transition-colors">
-             <div className="h-11 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-4 bg-slate-50 dark:bg-slate-900/50">
-                <h3 className="text-sm font-bold text-slate-700 dark:text-slate-300 flex items-center gap-2">🔍 DB Inspector</h3>
-                <span className="flex items-center gap-1.5 text-[10px]">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                    <span className="text-emerald-600 dark:text-emerald-400 font-bold">Auto-Syncing</span>
-                </span>
-            </div>
-            
-            <div className="flex-1 overflow-y-auto p-3 space-y-4">
-                
-                {/* 1. Table Projects */}
-                <div>
-                    <h4 className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 flex items-center justify-between">
-                        Projects <span>({dbContent?.projects?.length || 0})</span>
-                    </h4>
-                    <div className="space-y-1.5">
-                        {dbContent?.projects?.length > 0 ? dbContent.projects.map((p: any) => (
-                            <div key={p.id} className="p-2 bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700/50 rounded-lg text-[10px]">
-                                <p className="font-bold text-slate-700 dark:text-slate-200 truncate">{p.name}</p>
-                                <p className="text-slate-400 opacity-70">ID: {p.id} · {p.updated_at}</p>
+        {/* Right Panel (Monitor & Details) */}
+        <aside className="w-[340px] bg-slate-50 dark:bg-slate-900/80 border-l border-slate-200 dark:border-slate-800 flex flex-col shrink-0 overflow-hidden transition-colors shadow-[-5px_0_15px_-10px_rgba(0,0,0,0.05)] dark:shadow-none z-[5]">
+            {selectedNode ? (
+                <div className="flex-1 flex flex-col overflow-hidden animate-in fade-in slide-in-from-right-4 duration-300">
+                    <div className="h-14 border-b border-slate-200 dark:border-slate-800 flex items-center px-5 bg-white dark:bg-slate-900 shadow-sm z-10">
+                        <h3 className="text-[15px] font-bold tracking-wide text-indigo-600 dark:text-indigo-400 flex items-center gap-2">📖 Block Details</h3>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-5 space-y-6">
+                        <div className="flex items-start gap-4">
+                            <span className="text-5xl drop-shadow-md">{(selectedNode.data as any).def.icon}</span>
+                            <div className="pt-1">
+                                <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100 leading-tight mb-2">{(selectedNode.data as any).def.name}</h2>
+                                <span className={`text-[10px] font-bold px-2.5 py-1 rounded-md bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300 shadow-sm border border-slate-300 dark:border-slate-700 tracking-widest`}>
+                                    {(selectedNode.data as any).def.badge} BLOCK
+                                </span>
                             </div>
-                        )) : <p className="text-[10px] text-slate-400 italic text-center py-2">No projects found</p>}
+                        </div>
+                        <div className="space-y-3">
+                            <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest flex items-center gap-2"><span className="w-3 h-[1px] bg-slate-300 dark:bg-slate-600"></span>Description</h4>
+                            <p className="text-[14px] text-slate-700 dark:text-slate-200 leading-relaxed bg-white dark:bg-slate-800/80 p-4 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700/80">
+                                {(selectedNode.data as any).def.description}
+                            </p>
+                        </div>
+                        { (selectedNode.data as any).def.insight && (
+                        <div className="space-y-3 pt-2">
+                             <h4 className="text-xs font-bold text-amber-500 uppercase tracking-widest flex items-center gap-2"><span className="w-3 h-[1px] bg-amber-200 dark:bg-amber-900/50"></span>AI Insight</h4>
+                             <div className="bg-amber-50 dark:bg-amber-900/20 p-4 rounded-2xl border border-amber-200/60 dark:border-amber-800/40">
+                                <h5 className="text-sm font-bold text-amber-800 dark:text-amber-300 mb-1">{(selectedNode.data as any).def.insight.title}</h5>
+                                <p className="text-xs text-amber-700 dark:text-amber-400/80 leading-relaxed mb-3">{(selectedNode.data as any).def.insight.text}</p>
+                                <code className="block bg-amber-100 dark:bg-amber-950/50 p-2 rounded-lg text-[11px] font-mono text-amber-900 dark:text-amber-200/70 overflow-x-auto">{(selectedNode.data as any).def.insight.formula}</code>
+                             </div>
+                        </div>
+                        )}
                     </div>
                 </div>
-
-                {/* 2. Table Flows (Nodes/Edges count) */}
-                <div>
-                    <h4 className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 flex items-center justify-between">
-                        Canvas Data <span>({dbContent?.flows?.length || 0})</span>
-                    </h4>
-                    <div className="space-y-1.5">
-                        {dbContent?.flows?.length > 0 ? dbContent.flows.slice(0, 5).map((f: any) => (
-                            <div key={f.id} className="p-2 bg-indigo-50/50 dark:bg-indigo-900/10 border border-indigo-100/50 dark:border-indigo-800/30 rounded-lg text-[10px]">
-                                <p className="font-bold text-indigo-600 dark:text-indigo-400">Flow Version {f.id}</p>
-                                <p className="text-slate-500">Project Ref: {f.project_id}</p>
-                                <code className="block mt-1 bg-white dark:bg-slate-900 p-1 rounded border border-indigo-100 dark:border-indigo-800/50 text-[9px]">
-                                    {JSON.parse(f.flow_data).nodes?.length} nodes · {JSON.parse(f.flow_data).edges?.length} edges
-                                </code>
-                            </div>
-                        )) : <p className="text-[10px] text-slate-400 italic text-center py-2">Empty canvas storage</p>}
+            ) : (
+                <div className="flex-1 flex flex-col overflow-hidden">
+                    <div className="h-14 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-5 bg-white dark:bg-slate-900 shadow-sm z-10">
+                        <h3 className="text-[15px] font-bold text-slate-700 dark:text-slate-300 flex items-center gap-2">📊 Preview & Stats</h3>
                     </div>
-                </div>
-
-                {/* 3. Table Sessions */}
-                <div>
-                    <h4 className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2 flex items-center justify-between">
-                        Sessions <span>({dbContent?.sessions?.length || 0})</span>
-                    </h4>
-                    <div className="space-y-1.5">
-                        {dbContent?.sessions?.length > 0 ? dbContent.sessions.map((s: any) => (
-                            <div key={s.id} className="p-2 bg-amber-50/50 dark:bg-amber-900/10 border border-amber-100/50 dark:border-amber-800/30 rounded-lg text-[10px]">
-                                <div className="flex justify-between font-bold">
-                                    <span className="text-amber-700 dark:text-amber-400">SESSION #{s.id}</span>
-                                    <span className="px-1.5 bg-amber-200 dark:bg-amber-800 rounded text-[8px] uppercase">{s.status}</span>
+                    <div className="flex-1 overflow-y-auto p-5 space-y-4">
+                        <div className="bg-slate-900 dark:bg-black rounded-2xl overflow-hidden aspect-video flex flex-col items-center justify-center border-4 border-slate-800 shadow-inner relative group">
+                            {(activeMonitorFrame && monitorPoweredOn) ? (
+                                <img src={activeMonitorFrame} alt="Live Monitor" className="w-full h-full object-cover" />
+                            ) : (
+                                <div className="flex flex-col items-center gap-3 text-slate-500">
+                                    <span className="text-4xl opacity-20">🖥️</span>
+                                    <span className="text-[11px] font-bold tracking-tight uppercase opacity-60 px-3 py-1 bg-slate-800 rounded-md"> Monitor Inactive </span>
                                 </div>
-                                <p className="text-slate-500 mt-1">Start: {s.start_time}</p>
-                            </div>
-                        )) : <p className="text-[10px] text-slate-400 italic text-center py-2">No training sessions</p>}
+                            )}
+                            <div className="absolute inset-0 bg-indigo-500/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
+                        </div>
+                        <div className="grid grid-cols-2 gap-3 text-center pt-2">
+                            <div className="bg-white dark:bg-slate-800/80 p-4 rounded-2xl border border-slate-200 dark:border-slate-700/80 shadow-sm"><p className="text-[11px] text-indigo-500 dark:text-indigo-400 font-bold uppercase tracking-wider mb-1">Epochs</p><p className="text-2xl font-black text-slate-800 dark:text-slate-100">0/0</p></div>
+                            <div className="bg-white dark:bg-slate-800/80 p-4 rounded-2xl border border-slate-200 dark:border-slate-700/80 shadow-sm"><p className="text-[11px] text-orange-500 dark:text-orange-400 font-bold uppercase tracking-wider mb-1">mAP@50</p><p className="text-2xl font-black text-slate-800 dark:text-slate-100">0.0%</p></div>
+                        </div>
                     </div>
                 </div>
-
-            </div>
-            
-            <div className="p-4 bg-slate-50 dark:bg-slate-900/80 border-t border-slate-200 dark:border-slate-800">
-                <p className="text-[9px] text-slate-400 leading-relaxed italic">
-                    💡 This panel shows raw data directly from <b>SQLite</b> in real-time. It refreshes every 2 seconds.
-                </p>
-            </div>
+            )}
         </aside>
       </div>
 
-       <footer className="h-14 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between px-4 shrink-0 transition-colors">
-            <div className="flex items-center gap-2"></div>
-            <div className="flex gap-2">
-                <button onClick={handleTrain} className="flex items-center gap-2 px-8 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm rounded-xl transition-all shadow-md shadow-indigo-500/20">▶ Train Model</button>
-                <button className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-bold text-sm rounded-xl transition-all shadow-md shadow-teal-500/20">🤖 Deploy to Robot</button>
+       <footer className="h-16 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shrink-0 transition-colors shadow-[0_-5px_15px_-10px_rgba(0,0,0,0.05)] z-20 relative">
+            <div className="text-xs text-slate-500 font-medium">
+                Ready to train your model. Ensure you have the datasets properly configured.
+            </div>
+            <div className="flex gap-3">
+                <button onClick={handleTrain} className="flex items-center gap-2 px-8 py-3 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold text-sm rounded-xl transition-all shadow-lg shadow-indigo-500/25 active:scale-[0.98]">
+                    <span className="text-lg">▶</span> Train YOLO Model
+                </button>
+                <button className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-white font-bold text-sm rounded-xl transition-all shadow-lg shadow-emerald-500/25 active:scale-[0.98]">
+                    <span className="text-lg">▶️</span> Start Live Detection
+                </button>
             </div>
         </footer>
     </div>
