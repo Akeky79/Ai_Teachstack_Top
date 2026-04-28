@@ -33,14 +33,8 @@ function AppContent() {
   const [activeCategory, setActiveCategory] = useState<'input' | 'model' | 'training' | 'output' | 'viz'>('input');
   const [isDark, setIsDark] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  // --- Auth & User States (removed - guest mode) ---
   const settingsRef = useRef<HTMLDivElement>(null);
-
-  // --- Auth & User States ---
-  const [user, setUser] = useState<any>(null);
-  const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
 
   // --- Flow States ---
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
@@ -61,7 +55,19 @@ function AppContent() {
   const [frameHistory, setFrameHistory] = useState<string[]>([]);
   const [targetClasses, setTargetClasses] = useState('person, dog, cat, car');
   const [modelVariant, setModelVariant] = useState('YOLO11 Nano');
-  const [trainingProgress, setTrainingProgress] = useState({ epoch: 0, loss: 0, val_loss: 0, status: 'idle' });
+  const [trainingProgress, setTrainingProgress] = useState({ epoch: 0, loss: 0, val_loss: 0, map50: 0, status: 'idle', total_epochs: 100 });
+  const [lossHistory, setLossHistory] = useState<{ epoch: number; loss: number; val_loss: number; map50: number }[]>([]);
+  const [detResults, setDetResults] = useState<any[]>([]);
+  const [imageInference, setImageInference] = useState({ running: false, current: 0, total: 0, filename: '' });
+  const [datasets, setDatasets] = useState<any[]>([]);
+
+  // Fetch datasets list
+  const fetchDatasets = async () => {
+    try {
+      const res = await fetch('http://localhost:3000/api/datasets');
+      if (res.ok) { const d = await res.json(); setDatasets(d); }
+    } catch {}
+  };
 
   // --- Socket Sync Hook (Concept) ---
   useEffect(() => {
@@ -73,7 +79,18 @@ function AppContent() {
       setFrameHistory(prev => [...prev.slice(-29), image]);
     };
     const handleTraining = (data: any) => {
-      setTrainingProgress(prev => data.status ? { ...prev, ...data } : { ...data, status: 'training' });
+      const updated = { ...data, status: data.status || 'training' };
+      setTrainingProgress(prev => ({ ...prev, ...updated }));
+      // Accumulate loss history for chart
+      if (data.epoch > 0 && data.status === 'training') {
+        setLossHistory(prev => [
+          ...prev.filter(p => p.epoch !== data.epoch),
+          { epoch: data.epoch, loss: data.loss || 0, val_loss: data.val_loss || 0, map50: data.map50 || 0 }
+        ]);
+      }
+      if (data.status === 'started') setLossHistory([]);
+      // Broadcast to chart nodes
+      window.dispatchEvent(new CustomEvent('training-progress-update', { detail: updated }));
     };
     const handleWebcam = (image: string) => {
       setActiveMonitorFrame(image);
@@ -81,19 +98,60 @@ function AppContent() {
     const handleParams = (data: any) => {
       if (data.label === 'Model Variant') setModelVariant(data.value);
     };
+    const handleDetResults = (data: any) => {
+      const rows = data.detections || [];
+      setDetResults(rows);
+      window.dispatchEvent(new CustomEvent('det-results-update', { detail: rows }));
+    };
+    const handleImageStart = (data: any) => {
+      setImageInference({ running: true, current: 0, total: data.total, filename: '' });
+      window.dispatchEvent(new CustomEvent('image-inference-start', { detail: data }));
+    };
+    const handleImageProgress = (data: any) => {
+      setImageInference(prev => ({ ...prev, current: data.current, total: data.total, filename: data.filename }));
+      window.dispatchEvent(new CustomEvent('image-inference-progress', { detail: data }));
+    };
+    const handleImageDone = (data: any) => {
+      setImageInference({ running: false, current: data.total_images, total: data.total_images, filename: 'Done!' });
+      window.dispatchEvent(new CustomEvent('image-inference-done', { detail: data }));
+    };
 
     socket.on('connect', handleConnect);
     socket.on('stream_to_web', handleStream);
     socket.on('ai_training_progress', handleTraining);
+    socket.on('training_progress', handleTraining);  // also listen directly
     socket.on('ai_webcam_frame', handleWebcam);
     socket.on('ai_params_sync', handleParams);
+    const handleDatasetStatus = (data: any) => {
+      window.dispatchEvent(new CustomEvent('dataset-status-update', { detail: data }));
+      if (data.status === 'valid') fetchDatasets(); // refresh dataset list
+    };
+
+    socket.on('det_results', handleDetResults);
+    socket.on('image_inference_start', handleImageStart);
+    socket.on('image_inference_progress', handleImageProgress);
+    socket.on('image_inference_done', handleImageDone);
+    socket.on('dataset_status', handleDatasetStatus);
+
+    const handleArtifacts = (data: any) => {
+      // Broadcast confusion matrix + charts to all confusion-matrix nodes
+      window.dispatchEvent(new CustomEvent('training-artifacts-update', { detail: data }));
+    };
+    socket.on('training_artifacts', handleArtifacts);
 
     return () => {
       socket.off('connect', handleConnect);
       socket.off('stream_to_web', handleStream);
       socket.off('ai_training_progress', handleTraining);
+      socket.off('training_progress', handleTraining);
       socket.off('ai_webcam_frame', handleWebcam);
       socket.off('ai_params_sync', handleParams);
+      socket.off('det_results', handleDetResults);
+      socket.off('image_inference_start', handleImageStart);
+      socket.off('image_inference_progress', handleImageProgress);
+      socket.off('image_inference_done', handleImageDone);
+      socket.off('dataset_status', handleDatasetStatus);
+      socket.off('training_artifacts', handleArtifacts);
     };
   }, []);
 
@@ -115,12 +173,13 @@ function AppContent() {
     }
   }, [monitorPoweredOn, isAiSystemRunning]);
 
-  useEffect(() => { 
-    if (token) {
-        setUser({ username: 'User' });
-        fetchWorkspaces();
-    }
-  }, [token]);
+  // Load workspaces and datasets on mount
+  useEffect(() => { fetchWorkspaces(); fetchDatasets(); }, []);
+
+  // Broadcast datasets to all CustomNodes via window event
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('datasets-updated', { detail: datasets }));
+  }, [datasets]);
 
   // ปิด Settings popup เมื่อคลิกที่อื่นนอก popup
   useEffect(() => {
@@ -142,47 +201,10 @@ function AppContent() {
 
   const fetchWorkspaces = async () => {
     try {
-      const res = await fetch('http://localhost:3000/api/projects', {
-          headers: { 'Authorization': `Bearer ${token}` }
-      });
+      const res = await fetch('http://localhost:3000/api/projects');
       const data = await res.json();
       if (res.ok) setSavedWorkspaces(data);
     } catch (e) { console.error("Fetch failed", e); }
-  };
-
-  const handleAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const endpoint = authMode === 'login' ? 'login' : 'register';
-    try {
-        const res = await fetch(`http://localhost:3000/api/auth/${endpoint}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, password })
-        });
-        const data = await res.json();
-        if (res.ok) {
-            if (authMode === 'login') {
-                localStorage.setItem('token', data.token);
-                setToken(data.token);
-                setUser(data.user);
-            } else {
-                alert("Registered! Now please login.");
-                setAuthMode('login');
-            }
-        } else {
-            alert(data.error);
-        }
-    } catch (e) { alert("Auth failed"); }
-  };
-
-  const handleLogout = () => {
-    localStorage.removeItem('token');
-    setToken(null);
-    setUser(null);
-    setSavedWorkspaces([]);
-    setNodes([]);
-    setEdges([]);
-    setCurrentProjectId(null);
   };
 
   const handleSave = async () => {
@@ -193,41 +215,29 @@ function AppContent() {
         flow_data: { nodes, edges },
         project_id: currentProjectId 
       };
-      
       const res = await fetch('http://localhost:3000/api/save-flow', { 
         method: 'POST', 
-        headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-        }, 
+        headers: { 'Content-Type': 'application/json' }, 
         body: JSON.stringify(payload) 
       });
-      
       const result = await res.json();
-      
-      if (!res.ok) {
-          throw new Error(result.error || 'Failed to save to database');
-      }
-      
+      if (!res.ok) throw new Error(result.error || 'Failed to save');
       if (result.project_id) setCurrentProjectId(result.project_id);
       await fetchWorkspaces();
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 2500);
     } catch (e: any) { 
-        console.error("Save error:", e);
-        alert(`❌ ป้องกันการบันทึก: ${e.message || 'โปรดลงชื่อเข้าใช้ (Login) ก่อนบันทึกงาน'}`);
-        setSaveStatus('error');
-        setTimeout(() => setSaveStatus('idle'), 3000);
+      console.error("Save error:", e);
+      setSaveStatus('error');
+      setTimeout(() => setSaveStatus('idle'), 3000);
     }
   };
 
   const handleLoadProject = async (id: number) => {
-    if (loadingProjectId === id) return; // ป้องกัน double click
+    if (loadingProjectId === id) return;
     setLoadingProjectId(id);
     try {
-      const res = await fetch(`http://localhost:3000/api/projects/${id}/flow`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-      });
+      const res = await fetch(`http://localhost:3000/api/projects/${id}/flow`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Load failed');
       if (data.flow_data) {
@@ -244,25 +254,18 @@ function AppContent() {
 
   const handleDelete = async (id: number) => {
     try {
-      await fetch(`http://localhost:3000/api/projects/${id}`, { 
-          method: 'DELETE',
-          headers: { 'Authorization': `Bearer ${token}` }
-      });
+      await fetch(`http://localhost:3000/api/projects/${id}`, { method: 'DELETE' });
       if (currentProjectId === id) setCurrentProjectId(null);
       fetchWorkspaces();
     } catch(e) { alert("Delete failed."); }
   };
 
   const handleTrain = async () => {
-    if (!currentProjectId) { alert("Please save your project first!"); return; }
     try {
         const res = await fetch('http://localhost:3000/api/train/start', {
             method: 'POST',
-            headers: { 
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`
-            },
-            body: JSON.stringify({ project_id: currentProjectId, hyperparams: {} })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ hyperparams: {} })
         });
         const data = await res.json();
         alert(data.message);
@@ -325,40 +328,6 @@ function AppContent() {
     [reactFlowInstance, blockCounter, setNodes]
   );
 
-  if (!token) {
-      return (
-          <div className="h-screen w-screen bg-gradient-to-br from-slate-900 to-slate-950 flex items-center justify-center font-sans antialiased text-slate-200">
-              <div className="w-full max-w-md p-10 bg-slate-900/80 backdrop-blur-xl border border-slate-700/50 rounded-3xl shadow-[0_0_40px_rgba(79,70,229,0.15)] relative overflow-hidden">
-                  <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-indigo-500 via-purple-500 to-emerald-500" />
-                  <div className="flex flex-col items-center mb-8">
-                      <div className="w-16 h-16 bg-gradient-to-tr from-indigo-600 to-violet-500 rounded-2xl flex items-center justify-center text-white font-extrabold text-3xl mb-5 shadow-lg shadow-indigo-500/30 ring-4 ring-slate-800">R</div>
-                      <h1 className="text-3xl font-bold tracking-tight text-white mb-2">Robo Learn AI</h1>
-                      <p className="text-slate-400 text-sm font-medium">{authMode === 'login' ? 'Welcome back! Please login to your workspace.' : 'Create an account to start your AI journey.'}</p>
-                  </div>
-                  
-                  <form onSubmit={handleAuth} className="space-y-5">
-                      <div>
-                          <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 ml-1">Username</label>
-                          <input type="text" value={username} onChange={e => setUsername(e.target.value)} required className="w-full bg-slate-950/50 border border-slate-700/80 rounded-xl px-4 py-3.5 text-slate-100 font-medium placeholder-slate-600 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all shadow-inner" placeholder="Enter username..." />
-                      </div>
-                      <div>
-                          <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 ml-1">Password</label>
-                          <input type="password" value={password} onChange={e => setPassword(e.target.value)} required className="w-full bg-slate-950/50 border border-slate-700/80 rounded-xl px-4 py-3.5 text-slate-100 font-medium placeholder-slate-600 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all shadow-inner" placeholder="Enter password..." />
-                      </div>
-                      <button type="submit" className="w-full bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-indigo-500/25 transition-all active:scale-[0.98] mt-4 tracking-wide">
-                          {authMode === 'login' ? 'Login to Workspace' : 'Create Account'}
-                      </button>
-                  </form>
-
-                  <div className="mt-8 text-center pt-6 border-t border-slate-800">
-                      <button onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} className="text-sm text-indigo-400 hover:text-indigo-300 font-medium tracking-wide transition-colors">
-                          {authMode === 'login' ? "Don't have an account? Register" : "Already have an account? Login"}
-                      </button>
-                  </div>
-              </div>
-          </div>
-      );
-  }
 
   const categories = [
     { id: 'input', icon: '📷', label: 'Image Data', color: 'blue' },
@@ -397,7 +366,7 @@ function AppContent() {
             </React.Fragment>
           ))}
 
-          {/* Settings / Profile Button - Pinned to bottom */}
+          {/* Settings Button - Pinned to bottom */}
           <div ref={settingsRef} className="relative mt-auto mb-4">
             <button 
                 onClick={() => setShowSettings(!showSettings)}
@@ -407,22 +376,18 @@ function AppContent() {
             </button>
 
             {showSettings && (
-                <div className="absolute bottom-0 left-16 w-56 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl z-50 p-2 animate-in fade-in slide-in-from-left-2 duration-200">
-                    <div className="px-3 py-3 border-b border-slate-100 dark:border-slate-800 mb-1">
-                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Logged in as</p>
-                        <p className="text-sm font-bold text-slate-800 dark:text-slate-100 truncate">@{user?.username || 'Guest'}</p>
-                        <p className="text-[10px] text-indigo-500 font-medium">User ID: {user?.id ? `ID #${user.id}` : 'N/A'}</p>
-                    </div>
-                    
-                    <button className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg transition-colors flex items-center gap-2">
-                        👤 Profile Settings
-                    </button>
-                    
+                <div className="absolute bottom-0 left-16 w-44 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl z-50 p-2 animate-in fade-in slide-in-from-left-2 duration-200">
                     <button 
-                        onClick={handleLogout}
-                        className="w-full text-left px-3 py-2 text-xs font-bold text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors flex items-center gap-2"
+                        onClick={() => setIsDark(!isDark)}
+                        className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg transition-colors flex items-center gap-2"
                     >
-                        🚪 Logout from Robo Learn
+                        {isDark ? '☀️ Light Mode' : '🌙 Dark Mode'}
+                    </button>
+                    <button 
+                        onClick={() => { setNodes([]); setEdges([]); setCurrentProjectId(null); setShowSettings(false); }}
+                        className="w-full text-left px-3 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg transition-colors flex items-center gap-2"
+                    >
+                        🗑️ Clear Workspace
                     </button>
                 </div>
             )}
@@ -434,7 +399,7 @@ function AppContent() {
             <div className="p-5 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm z-10">
                 <div className="flex items-center justify-between mb-3">
                     <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200 tracking-wide">Saved Workspaces</h3>
-                    <span className="text-[11px] bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 px-2 py-0.5 rounded-full font-bold border border-indigo-200 dark:border-indigo-800">@{user?.username}</span>
+                    <span className="text-[11px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 px-2 py-0.5 rounded-full font-bold">{savedWorkspaces.length} saved</span>
                 </div>
                 <div className="flex gap-2">
                     <button 

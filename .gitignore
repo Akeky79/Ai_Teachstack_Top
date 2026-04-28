@@ -38,3 +38,11 @@ __pycache__/
 *.pt
 *.onnx
 *.engine
+
+# Uploaded datasets & training runs (large binary files)
+backend/uploads/
+runs/
+
+# Test & temp files
+*.zip
+project_assessment.md

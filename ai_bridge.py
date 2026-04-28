@@ -2,10 +2,12 @@ import cv2
 import base64
 import socketio
 import time
-import sys
 import os
 import numpy as np
+import threading
+from pathlib import Path
 from ultralytics import YOLO
+
 
 # Utility for unbuffered logging
 def log(msg):
@@ -19,7 +21,8 @@ class AIEngine:
         self.is_running = False
         self.current_flow = {"nodes": [], "edges": []}
         self.latest_frame = None
-        
+        self.training_active = False
+
         self.config = {
             'confidence': 0.25,
             'iou': 0.45,
@@ -62,33 +65,72 @@ class AIEngine:
             except Exception as e:
                 log(f"Frame decode error: {e}")
 
+        @self.sio.on('run_image_inference')
+        def on_run_image_inference(data):
+            folder_path = data.get('folderPath', '')
+            folder_name = data.get('folder', 'default')
+            log(f"[📁] Image inference requested: {folder_path}")
+            t = threading.Thread(
+                target=self.run_image_folder_inference,
+                args=(folder_path, folder_name),
+                daemon=True
+            )
+            t.start()
+
+        @self.sio.on('start_training')
+        def on_start_training(data):
+            if self.training_active:
+                log("Training already running, skipping.")
+                return
+            hyperparams = data.get('hyperparams', {})
+            # Receive yaml_path from backend (resolved from dataset DB)
+            hyperparams['yaml_path'] = data.get('yaml_path', 'coco8.yaml')
+            hyperparams['dataset_name'] = data.get('dataset_name', 'coco8 (demo)')
+            log(f"[🎓] Training requested: dataset={hyperparams['dataset_name']}")
+            t = threading.Thread(target=self.run_training, args=(hyperparams,), daemon=True)
+            t.start()
+
+    # -------------------------------------------------------
     def get_model(self):
         variant = self.config['model_variant'].split(' ')[0].lower()
-        if not variant.endswith('.pt'): variant += '.pt'
-        
+        if not variant.endswith('.pt'):
+            variant += '.pt'
         if variant not in self.models:
             log(f"Loading weights: {variant}")
             self.models[variant] = YOLO(variant)
         return self.models[variant]
 
     def check_active_pipeline(self):
-        """Validates if current flow has Input -> Model -> Monitor"""
         nodes = self.current_flow.get('nodes', [])
         ids = [n.get('data', {}).get('def', {}).get('id') for n in nodes]
-        
-        has_input = any(x in ['webcam-input', 'robot-stream'] for x in ids)
-        has_model = any(x in ['yolo-model', 'inference'] for x in ids)
-        has_monitor = any(x == 'live-monitor' for x in ids)
-        
-        return has_input and has_model and has_monitor
+        has_input = any(x in ['webcam-input', 'robot-stream', 'test-image'] for x in ids)
+        has_model = any(x in ['yolo-model', 'inference', 'ai-detector'] for x in ids)
+        return has_input and has_model
 
+    def encode_frame(self, frame, quality=70):
+        _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        return base64.b64encode(buf).decode('utf-8')
+
+    def extract_detections(self, results, model):
+        detections = []
+        names = model.names
+        r = results[0]
+        if r.boxes is not None:
+            for box in r.boxes:
+                cls_id = int(box.cls[0])
+                label = names.get(cls_id, str(cls_id))
+                conf = round(float(box.conf[0]), 3)
+                x1, y1, x2, y2 = [round(float(v), 1) for v in box.xyxy[0]]
+                detections.append([label, conf, x1, y1, x2, y2])
+        return detections, names
+
+    # -------------------------------------------------------
     def run_inference(self):
+        """Webcam / Robot stream inference loop."""
         if not self.is_running or self.latest_frame is None:
             return
-
         if not self.check_active_pipeline():
             return
-
         try:
             model = self.get_model()
             results = model.predict(
@@ -98,32 +140,250 @@ class AIEngine:
                 imgsz=self.config['imgsz'],
                 verbose=False
             )
-
-            # Draw and Encode
-            annotated_frame = results[0].plot()
-            _, buffer = cv2.imencode('.jpg', annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-            encoded_img = base64.b64encode(buffer).decode('utf-8')
-            
+            annotated = results[0].plot()
+            encoded = self.encode_frame(annotated)
             self.sio.emit('video_frame_from_robot', {
                 'robotId': 'WEBCAM_PROCESSED',
-                'image': f"data:image/jpeg;base64,{encoded_img}"
+                'image': f"data:image/jpeg;base64,{encoded}"
             })
-            
-            # Logic Engine (Simple Example)
-            self.process_logic(results)
-
+            detections, names = self.extract_detections(results, model)
+            self.sio.emit('det_results', {'detections': detections})
+            self.process_logic(results, names)
         except Exception as e:
             log(f"Inference error: {e}")
 
-    def process_logic(self, results):
-        # Implementation for Robot Commands based on detections
-        pass
+    # -------------------------------------------------------
+    def run_image_folder_inference(self, folder_path, folder_name):
+        """Process every image in a folder and stream results to frontend."""
+        log(f"[📁] Starting folder inference: {folder_path}")
 
+        if not os.path.exists(folder_path):
+            self.sio.emit('image_inference_done', {'error': f'Folder not found: {folder_path}'})
+            return
+
+        valid_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
+        image_files = [f for f in sorted(os.listdir(folder_path))
+                       if os.path.splitext(f)[1].lower() in valid_exts]
+
+        if not image_files:
+            self.sio.emit('image_inference_done', {'error': 'No images found'})
+            return
+
+        log(f"[📁] Processing {len(image_files)} images")
+        self.sio.emit('image_inference_start', {'total': len(image_files), 'folder': folder_name})
+
+        model = self.get_model()
+        total_dets = 0
+
+        for i, fname in enumerate(image_files):
+            frame = cv2.imread(os.path.join(folder_path, fname))
+            if frame is None:
+                continue
+            try:
+                results = model.predict(
+                    source=frame,
+                    conf=self.config['confidence'],
+                    iou=self.config['iou'],
+                    imgsz=self.config['imgsz'],
+                    verbose=False
+                )
+                # Send annotated frame to Live Monitor
+                annotated = results[0].plot()
+                encoded = self.encode_frame(annotated, quality=75)
+                self.sio.emit('video_frame_from_robot', {
+                    'robotId': 'WEBCAM_PROCESSED',
+                    'image': f"data:image/jpeg;base64,{encoded}"
+                })
+                # Detections table
+                detections, _ = self.extract_detections(results, model)
+                total_dets += len(detections)
+                self.sio.emit('det_results', {'detections': detections})
+                # Progress event
+                self.sio.emit('image_inference_progress', {
+                    'current': i + 1,
+                    'total': len(image_files),
+                    'filename': fname,
+                    'detections': len(detections)
+                })
+                time.sleep(0.08)
+            except Exception as e:
+                log(f"[📁] Error on {fname}: {e}")
+
+        log(f"[📁] Done. {total_dets} total detections across {len(image_files)} images")
+        self.sio.emit('image_inference_done', {
+            'total_images': len(image_files),
+            'total_detections': total_dets,
+            'folder': folder_name
+        })
+
+    # -------------------------------------------------------
+    def run_training(self, hyperparams):
+        """Run YOLO training with real-time loss/epoch emission."""
+        self.training_active = True
+        log("[🎓] Training started")
+        self.sio.emit('training_progress', {
+            'status': 'started', 'epoch': 0, 'loss': 0, 'val_loss': 0, 'map50': 0
+        })
+        try:
+            variant = self.config['model_variant'].split(' ')[0].lower()
+            if not variant.endswith('.pt'):
+                variant += '.pt'
+            model = YOLO(variant)
+
+            epochs     = int(hyperparams.get('epochs', 10))
+            batch      = int(str(hyperparams.get('batch_size', '16')).split(' ')[0])
+            lr0        = float(hyperparams.get('lr0', 0.01))
+            optimizer  = str(hyperparams.get('optimizer_type', 'AdamW')).split(' ')[0]
+            yaml_path  = hyperparams.get('yaml_path', 'coco8.yaml')
+            weight_decay = float(hyperparams.get('weight_decay', 0.0005))
+
+            # imgsz: use user-specified value if available, fallback based on dataset
+            raw_imgsz = hyperparams.get('imgsz', None)
+            if raw_imgsz and str(raw_imgsz).isdigit():
+                imgsz = int(raw_imgsz)
+            else:
+                imgsz = 320 if yaml_path == 'coco8.yaml' else 640
+
+            # LR Scheduler mapping
+            scheduler_raw = hyperparams.get('lr_scheduler', 'Cosine')
+            lrf_map = {'Cosine': 0.01, 'Linear': 0.1, 'Constant': 1.0}
+            lrf = lrf_map.get(str(scheduler_raw).split(' ')[0], 0.01)
+
+            log(f"[🎓] yaml={yaml_path} | epochs={epochs} | batch={batch} | imgsz={imgsz} | lr={lr0} | lrf={lrf} | opt={optimizer} | wd={weight_decay}")
+
+            sio_ref = self.sio
+
+            def on_epoch_end(trainer):
+                ep = trainer.epoch + 1
+                try:
+                    loss = round(float(trainer.loss.item()), 4)
+                except Exception:
+                    loss = round(float(trainer.loss), 4)
+                val_loss = round(float(trainer.metrics.get('val/box_loss', 0)), 4)
+                map50    = round(float(trainer.metrics.get('metrics/mAP50(B)', 0)), 4)
+                log(f"[🎓] Epoch {ep}/{epochs} loss={loss} val={val_loss} mAP50={map50}")
+                sio_ref.emit('training_progress', {
+                    'status': 'training',
+                    'epoch': ep,
+                    'total_epochs': epochs,
+                    'loss': loss,
+                    'val_loss': val_loss,
+                    'map50': map50
+                })
+
+            model.add_callback('on_fit_epoch_end', on_epoch_end)
+
+            model.train(
+                data=yaml_path,
+                epochs=epochs,
+                batch=batch,
+                lr0=lr0,
+                lrf=lrf,
+                optimizer=optimizer,
+                weight_decay=weight_decay,
+                imgsz=imgsz,
+                verbose=False,
+                project='runs/train',
+                name='exp'
+            )
+
+            # --- Collect training artifacts ---
+            run_dir = Path('runs/train/exp')
+            # Find most recent run if 'exp' doesn't exist (YOLO auto-increments)
+            train_root = Path('runs/train')
+            if train_root.exists():
+                runs = sorted(train_root.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True)
+                if runs:
+                    run_dir = runs[0]
+
+            artifacts = {}
+
+            # 1. Confusion Matrix PNG (normalized)
+            for cm_name in ['confusion_matrix_normalized.png', 'confusion_matrix.png']:
+                cm_path = run_dir / cm_name
+                if cm_path.exists():
+                    with open(cm_path, 'rb') as f:
+                        artifacts['confusion_matrix'] = base64.b64encode(f.read()).decode('utf-8')
+                    log(f"[🎓] Found: {cm_name}")
+                    break
+
+            # 2. Results curves (results.png — loss + mAP over epochs)
+            res_png = run_dir / 'results.png'
+            if res_png.exists():
+                with open(res_png, 'rb') as f:
+                    artifacts['results_chart'] = base64.b64encode(f.read()).decode('utf-8')
+
+            # 3. PR Curve
+            pr_png = run_dir / 'PR_curve.png'
+            if pr_png.exists():
+                with open(pr_png, 'rb') as f:
+                    artifacts['pr_curve'] = base64.b64encode(f.read()).decode('utf-8')
+
+            # 4. Parse results.csv for final metrics
+            results_csv = run_dir / 'results.csv'
+            final_metrics = {}
+            if results_csv.exists():
+                try:
+                    import csv
+                    with open(results_csv, newline='') as csvfile:
+                        reader = csv.DictReader(csvfile)
+                        rows = list(reader)
+                        if rows:
+                            last = rows[-1]
+                            final_metrics = {k.strip(): round(float(v), 4) for k, v in last.items()
+                                             if v.strip() and k.strip()}
+                except Exception as ce:
+                    log(f"[🎓] CSV parse error: {ce}")
+
+            log(f"[🎓] Artifacts: {list(artifacts.keys())} | Metrics: {len(final_metrics)} fields")
+
+            self.sio.emit('training_progress', {
+                'status': 'complete',
+                'epoch': epochs,
+                'total_epochs': epochs,
+                'loss': 0,
+                'val_loss': 0,
+                'map50': 0
+            })
+
+            # Emit artifacts separately (can be large)
+            self.sio.emit('training_artifacts', {
+                'run_dir': str(run_dir),
+                'artifacts': artifacts,
+                'metrics': final_metrics
+            })
+            log("[🎓] Training complete! Artifacts emitted.")
+
+        except Exception as e:
+            log(f"[🎓] Training error: {e}")
+            self.sio.emit('training_progress', {'status': 'error', 'message': str(e)})
+        finally:
+            self.training_active = False
+
+
+    # -------------------------------------------------------
+    def process_logic(self, results, names=None):
+        """Send robot commands from detected objects."""
+        nodes = self.current_flow.get('nodes', [])
+        robot_node = next((n for n in nodes if n.get('data', {}).get('def', {}).get('id') == 'robot-action'), None)
+        if not robot_node:
+            return
+        params = robot_node.get('data', {}).get('def', {}).get('params', [])
+        robot_id = next((p.get('value', 'ROBOT_01') for p in params if p.get('label') == 'Target Robot ID'), 'ROBOT_01')
+        auto_send = next((p.get('checked', True) for p in params if p.get('label') == 'Enable Auto-Send'), True)
+        if not auto_send or results[0].boxes is None or names is None:
+            return
+        detected = list(set([names.get(int(b.cls[0]), '') for b in results[0].boxes]))
+        if detected:
+            payload = {'robotId': robot_id, 'detections': detected, 'command': f"DETECTED:{','.join(detected)}"}
+            self.sio.emit('robot_command', payload)
+            log(f"[🤖] → {robot_id}: {payload['command']}")
+
+    # -------------------------------------------------------
     def start(self):
         try:
             self.sio.connect(self.server_url)
             log(f"AI Bridge active on {self.server_url}")
-            
             while True:
                 if self.is_running:
                     self.run_inference()
@@ -134,7 +394,7 @@ class AIEngine:
         except Exception as e:
             log(f"Fatal error: {e}")
             time.sleep(5)
-            self.start() # Simple auto-restart
+            self.start()
 
 if __name__ == "__main__":
     engine = AIEngine('http://localhost:3000')
