@@ -28,7 +28,10 @@ class AIEngine:
             'iou': 0.45,
             'imgsz': 640,
             'model_variant': 'yolo11n.pt',
-            'mode': 'inference'
+            'mode': 'inference',
+            'show_boxes': True,
+            'show_labels': True,
+            'target_classes': []
         }
 
         self.setup_handlers()
@@ -52,14 +55,25 @@ class AIEngine:
         @self.sio.on('ai_params_sync')
         def on_params_sync(data):
             label, value = data.get('label'), data.get('value')
-            if label == 'Confidence Threshold': self.config['confidence'] = float(value)
-            elif label == 'IOU Threshold': self.config['iou'] = float(value)
-            elif label == 'Model Variant': self.config['model_variant'] = value
+            if not label: return
+            
+            l = label.lower()
+            if 'conf' in l: self.config['confidence'] = float(value)
+            elif 'iou' in l: self.config['iou'] = float(value)
+            elif 'model variant' in l: self.config['model_variant'] = value
+            elif 'bounding box' in l: 
+                self.config['show_boxes'] = (str(value).lower() == 'true') if not isinstance(value, bool) else value
+            elif 'labels' in l: 
+                self.config['show_labels'] = (str(value).lower() == 'true') if not isinstance(value, bool) else value
 
         @self.sio.on('ai_webcam_frame')
         def on_webcam_frame(data):
             try:
-                img_bytes = base64.b64decode(data.split(',')[1])
+                # Handle data as string (raw base64) or dict (with 'image' key)
+                frame_str = data.get('image') if isinstance(data, dict) else data
+                if not frame_str or ',' not in frame_str:
+                    return
+                img_bytes = base64.b64decode(frame_str.split(',')[1])
                 nparr = np.frombuffer(img_bytes, np.uint8)
                 self.latest_frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             except Exception as e:
@@ -89,6 +103,13 @@ class AIEngine:
             log(f"[🎓] Training requested: dataset={hyperparams['dataset_name']}")
             t = threading.Thread(target=self.run_training, args=(hyperparams,), daemon=True)
             t.start()
+
+        @self.sio.on('update_search_classes')
+        def on_update_search_classes(data):
+            if isinstance(data, str):
+                classes = [c.strip().lower() for c in data.split(',') if c.strip()]
+                self.config['target_classes'] = classes
+                log(f"Target classes updated: {classes}")
 
     # -------------------------------------------------------
     def get_model(self):
@@ -140,7 +161,27 @@ class AIEngine:
                 imgsz=self.config['imgsz'],
                 verbose=False
             )
-            annotated = results[0].plot()
+            
+            # Strict filtering: if target_classes is set, filter the boxes
+            if self.config['target_classes']:
+                # Find indices of boxes that match our target classes
+                indices = []
+                for i, box in enumerate(results[0].boxes):
+                    cls_id = int(box.cls[0])
+                    label = model.names.get(cls_id, "").lower()
+                    if label in self.config['target_classes']:
+                        indices.append(i)
+                
+                # Apply filtering to the results object
+                # If no matches, this will result in empty boxes
+                results[0].boxes = results[0].boxes[indices]
+
+            annotated = results[0].plot(
+                boxes=self.config['show_boxes'],
+                labels=self.config['show_labels'],
+                probs=self.config['show_labels'],
+                conf=self.config['show_labels']
+            )
             encoded = self.encode_frame(annotated)
             self.sio.emit('video_frame_from_robot', {
                 'robotId': 'WEBCAM_PROCESSED',
@@ -188,7 +229,12 @@ class AIEngine:
                     verbose=False
                 )
                 # Send annotated frame to Live Monitor
-                annotated = results[0].plot()
+                annotated = results[0].plot(
+                    boxes=self.config['show_boxes'],
+                    labels=self.config['show_labels'],
+                    probs=self.config['show_labels'],
+                    conf=self.config['show_labels']
+                )
                 encoded = self.encode_frame(annotated, quality=75)
                 self.sio.emit('video_frame_from_robot', {
                     'robotId': 'WEBCAM_PROCESSED',

@@ -439,6 +439,10 @@ io.on('connection', (socket) => {
         io.emit('ai_system_sync', data);
     });
 
+    socket.on('ai_params_sync', (data) => {
+        io.emit('ai_params_sync', data);
+    });
+
     // Relay handlers
     socket.on('video_frame_from_robot', (data) => socket.to(data.robotId).emit('stream_to_web', data.image));
     socket.on('video_frame_from_webcam', (data) => io.emit('ai_webcam_frame', data));

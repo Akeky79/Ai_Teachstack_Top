@@ -53,11 +53,13 @@ function AppContent() {
   const [aiProcessedFrame, setAiProcessedFrame] = useState<string | null>(null);
   const [activeMonitorFrame, setActiveMonitorFrame] = useState<string | null>(null);
   const [frameHistory, setFrameHistory] = useState<string[]>([]);
-  const [targetClasses, setTargetClasses] = useState('person, dog, cat, car');
+  const [targetClasses, setTargetClasses] = useState('');
+  const [searchInput, setSearchInput] = useState('');
   const [modelVariant, setModelVariant] = useState('YOLO11 Nano');
   const [trainingProgress, setTrainingProgress] = useState({ epoch: 0, loss: 0, val_loss: 0, map50: 0, status: 'idle', total_epochs: 100 });
   const [lossHistory, setLossHistory] = useState<{ epoch: number; loss: number; val_loss: number; map50: number }[]>([]);
   const [detResults, setDetResults] = useState<any[]>([]);
+  const [sessionFrames, setSessionFrames] = useState(0);
   const [imageInference, setImageInference] = useState({ running: false, current: 0, total: 0, filename: '' });
   const [datasets, setDatasets] = useState<any[]>([]);
 
@@ -75,8 +77,10 @@ function AppContent() {
 
     const handleConnect = () => console.log('✅ Connected to AI Server');
     const handleStream = (image: string) => {
+      if (!isAiSystemRunning) return; // Ignore frames if stopped
       setAiProcessedFrame(image);
       setFrameHistory(prev => [...prev.slice(-29), image]);
+      setSessionFrames(prev => prev + 1);
     };
     const handleTraining = (data: any) => {
       const updated = { ...data, status: data.status || 'training' };
@@ -93,12 +97,14 @@ function AppContent() {
       window.dispatchEvent(new CustomEvent('training-progress-update', { detail: updated }));
     };
     const handleWebcam = (image: string) => {
+      if (!isAiSystemRunning) return; // Ignore if stopped
       setActiveMonitorFrame(image);
     };
     const handleParams = (data: any) => {
       if (data.label === 'Model Variant') setModelVariant(data.value);
     };
     const handleDetResults = (data: any) => {
+      if (!isAiSystemRunning) return; // Ignore if stopped
       const rows = data.detections || [];
       setDetResults(rows);
       window.dispatchEvent(new CustomEvent('det-results-update', { detail: rows }));
@@ -138,6 +144,12 @@ function AppContent() {
       window.dispatchEvent(new CustomEvent('training-artifacts-update', { detail: data }));
     };
     socket.on('training_artifacts', handleArtifacts);
+    
+    // Listen for parameter updates from nodes
+    const handleParamUpdate = (e: any) => {
+      socket.emit('ai_params_sync', e.detail);
+    };
+    window.addEventListener('ai-param-update', handleParamUpdate);
 
     return () => {
       socket.off('connect', handleConnect);
@@ -152,8 +164,9 @@ function AppContent() {
       socket.off('image_inference_done', handleImageDone);
       socket.off('dataset_status', handleDatasetStatus);
       socket.off('training_artifacts', handleArtifacts);
+      window.removeEventListener('ai-param-update', handleParamUpdate);
     };
-  }, []);
+  }, [isAiSystemRunning]);
 
   // Sync flow topology
   useEffect(() => {
@@ -164,7 +177,29 @@ function AppContent() {
   useEffect(() => {
     socket.emit('update_search_classes', targetClasses);
     socket.emit('ai_system_toggle', { running: isAiSystemRunning });
+    
+    // Clear results if AI is stopped (except gallery)
+    if (!isAiSystemRunning) {
+      setAiProcessedFrame(null);
+      setActiveMonitorFrame(null);
+      setDetResults([]);
+      setSessionFrames(0); // Reset count but KEEP frameHistory for gallery
+    }
   }, [targetClasses, isAiSystemRunning]);
+
+  // Auto-clear results if pipeline structure is broken
+  useEffect(() => {
+    const hasInput = nodes.some(n => ['webcam-stream', 'robot-stream', 'custom'].includes(n.type || ''));
+    const hasMonitor = nodes.some(n => n.type === 'monitor-node' || (n.data as any)?.def?.id === 'live-monitor');
+    
+    if (!hasInput || !hasMonitor) {
+      setAiProcessedFrame(null);
+      setActiveMonitorFrame(null);
+      setFrameHistory([]); // Clear everything if structure is broken
+      setDetResults([]);
+      setSessionFrames(0);
+    }
+  }, [nodes, edges]);
 
   // Sync processing room
   useEffect(() => {
@@ -340,10 +375,19 @@ function AppContent() {
   const activeBlocks = BLOCKS[activeCategory] || [];
   const panelTitles: Record<string, string> = { input: '📷 Image Data Blocks', model: '🧠 AI Model Blocks', output: '📊 Output Blocks', training: '⚙️ Training Blocks', viz: '📈 Visualization Blocks' };
 
+  // Check if pipeline is complete (Input -> Model -> Monitor)
+  const isPipelineComplete = React.useMemo(() => {
+    const hasInput = nodes.some(n => ['webcam-stream', 'robot-stream', 'test-image'].includes(n.type || ''));
+    const hasModel = nodes.some(n => (n.data as any)?.def?.id === 'ai-detector');
+    const hasMonitor = nodes.some(n => n.type === 'monitor-node' || (n.data as any)?.def?.id === 'live-monitor');
+    const hasConnections = edges.length >= 2;
+    return hasInput && hasModel && hasMonitor && hasConnections;
+  }, [nodes, edges]);
+
   return (
     <div className={`font-sans bg-[#F9FAFB] dark:bg-slate-950 text-slate-800 dark:text-slate-200 h-screen w-screen overflow-hidden flex flex-col ${isDark ? 'dark' : ''}`}>
       <div className="flex flex-1 overflow-hidden">
-        
+        {/* ... existing navigation and panels ... */}
         {/* Left Icon Sidebar */}
         <nav className="w-[88px] bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col items-center py-5 gap-2 shrink-0 transition-colors z-10 shadow-[2px_0_10px_-3px_rgba(0,0,0,0.05)] dark:shadow-none">
           <div className="w-12 h-12 bg-gradient-to-br from-indigo-500 to-indigo-700 rounded-xl flex items-center justify-center text-white font-black text-2xl mb-1 shadow-lg shadow-indigo-500/30">R</div>
@@ -505,8 +549,8 @@ function AppContent() {
                     <span className="flex items-center gap-1.5"><code className="bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded text-[10px] font-bold text-slate-600 dark:text-slate-300">{edges.length}</code> Connections</span>
                 </div>
                 <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                    Workspace Active
+                    <span className={`w-2 h-2 rounded-full ${isPipelineComplete ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
+                    {isPipelineComplete ? 'Pipeline Ready' : 'Pipeline Incomplete'}
                 </div>
             </div>
         </main>
@@ -585,12 +629,17 @@ function AppContent() {
                             </label>
                             <input 
                                 type="text"
-                                value={targetClasses}
-                                onChange={(e) => setTargetClasses(e.target.value)}
+                                value={searchInput}
+                                onChange={(e) => setSearchInput(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    setTargetClasses(searchInput);
+                                  }
+                                }}
                                 placeholder="e.g. person, car, dog..."
                                 className="w-full text-[12px] font-medium border border-slate-200 dark:border-slate-700/80 rounded-xl px-4 py-2.5 bg-white dark:bg-slate-800 focus:ring-2 focus:ring-indigo-500 outline-none transition-all shadow-sm"
                             />
-                            <p className="text-[9px] text-slate-400 italic">Separate with commas to detect multiple objects.</p>
+                            <p className="text-[9px] text-slate-400 italic">Separate with commas. Press Enter to apply.</p>
                         </div>
 
                         <div className="grid grid-cols-2 gap-3 text-center pt-2">
@@ -612,7 +661,7 @@ function AppContent() {
                             </div>
                             <div className="bg-white dark:bg-slate-800/80 p-4 rounded-2xl border border-slate-200 dark:border-slate-700/80 shadow-sm">
                                 <p className="text-[11px] text-cyan-500 dark:text-cyan-400 font-bold uppercase tracking-wider mb-1">Frames</p>
-                                <p className="text-2xl font-black text-slate-800 dark:text-slate-100">{frameHistory.length}</p>
+                                <p className="text-2xl font-black text-slate-800 dark:text-slate-100">{sessionFrames}</p>
                                 <p className="text-[10px] text-slate-400 mt-1">processed</p>
                             </div>
                         </div>
@@ -641,14 +690,21 @@ function AppContent() {
 
        <footer className="h-16 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shrink-0 transition-colors shadow-[0_-5px_15px_-10px_rgba(0,0,0,0.05)] z-20 relative">
             <div className="text-xs text-slate-500 font-medium">
-                Ready to train your model. Ensure you have the datasets properly configured.
+                {isPipelineComplete ? 'Ready to train or run your model.' : 'Please connect Input ➔ AI Model ➔ Monitor to start inference.'}
             </div>
             <div className="flex gap-3">
                 <button onClick={handleTrain} className="flex items-center gap-2 px-8 py-3 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-bold text-sm rounded-xl transition-all shadow-lg shadow-indigo-500/25 active:scale-[0.98]">
                     <span className="text-lg">▶</span> Train YOLO Model
                 </button>
-                <button onClick={() => setIsAiSystemRunning(!isAiSystemRunning)} 
-                        className={`flex items-center gap-2 px-6 py-3 text-white font-bold text-sm rounded-xl transition-all shadow-lg active:scale-[0.98] ${isAiSystemRunning ? 'bg-amber-500 hover:bg-amber-400 shadow-amber-500/25' : 'bg-emerald-500 hover:bg-emerald-400 shadow-emerald-500/25'}`}>
+                <button 
+                  onClick={() => setIsAiSystemRunning(!isAiSystemRunning)} 
+                  disabled={!isPipelineComplete && !isAiSystemRunning}
+                  title={!isPipelineComplete ? "Please connect blocks properly first" : ""}
+                  className={`flex items-center gap-2 px-6 py-3 text-white font-bold text-sm rounded-xl transition-all shadow-lg active:scale-[0.98] 
+                    ${isAiSystemRunning ? 'bg-amber-500 hover:bg-amber-400 shadow-amber-500/25' 
+                      : isPipelineComplete ? 'bg-emerald-500 hover:bg-emerald-400 shadow-emerald-500/25' 
+                      : 'bg-slate-300 dark:bg-slate-700 cursor-not-allowed shadow-none text-slate-500'}`}
+                >
                     <span className="text-lg">{isAiSystemRunning ? '⏹️' : '▶️'}</span> {isAiSystemRunning ? 'Stop AI' : 'Start'}
                 </button>
             </div>
